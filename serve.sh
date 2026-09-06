@@ -13,9 +13,9 @@ APK="dist/YourTOBA-0.1.0.apk"
 if [[ ! -f "$APK" ]]; then
   echo "No APK yet. Building." >&2
   . ./env.sh
-  ./gradlew --quiet assembleRelease
+  ./gradlew --quiet assembleTvRelease
   mkdir -p dist
-  cp app/build/outputs/apk/release/app-release.apk "$APK"
+  cp app/build/outputs/apk/tv/release/app-tv-release.apk "$APK"
 fi
 
 PORT="${1:-8000}"

@@ -194,10 +194,54 @@ check('ad at depth 19 (deepest nesting seen in real browse data) is removed', ()
 })
 
 check('KNOWN CEILING: ad deeper than MAX_DEPTH survives', () => {
-  const out = sjson.parse(JSON.stringify(nestAdAt(30)))
+  const out = sjson.parse(JSON.stringify(nestAdAt(60)))
   const d = depthOfKey(out, 'adSlotRenderer')
   assert.notEqual(d, -1, 'documents the ceiling: this ad is expected to survive')
   console.log(`       (ad at depth 30 survives, as designed; fixture browse ad sits at depth ${depthOfKey(browseFixture, 'inFeedAdLayoutRenderer')})`)
+})
+
+check('mobile: feed ad renderers are removed, real items survive', () => {
+  const out = sjson.parse(JSON.stringify({
+    contents: { sectionListRenderer: { contents: [
+      { itemSectionRenderer: { contents: [{ compactVideoRenderer: { title: 'Real' } }] } },
+      { itemSectionRenderer: { contents: [{ compactPromotedItemRenderer: { title: 'Ad' } }] } },
+      { mealbarPromoRenderer: { title: 'Get Premium' } },
+      { itemSectionRenderer: { contents: [{ searchPyvRenderer: { ads: [] } }] } }
+    ] } }
+  }))
+  const c = out.contents.sectionListRenderer.contents
+  const flat = JSON.stringify(out)
+
+  // Every ad renderer is gone, wherever it sat.
+  for (const k of ['compactPromotedItemRenderer', 'mealbarPromoRenderer', 'searchPyvRenderer']) {
+    assert.equal(flat.includes(k), false, k + ' should be stripped')
+  }
+  // Real content untouched.
+  assert.equal(c[0].itemSectionRenderer.contents[0].compactVideoRenderer.title, 'Real')
+
+  // A top-level ad is removed entirely; an ad nested inside a section leaves
+  // the section behind as an empty wrapper. That is deliberate. Pruning
+  // "wrappers that became empty" would mean guessing which empty sections
+  // YouTube meant to send, and an empty section lays out as nothing anyway.
+  assert.equal(c.length, 3, 'the top-level mealbar entry is gone')
+  assert.equal(c[1].itemSectionRenderer.contents.length, 0, 'ad removed, shell remains')
+})
+
+check('deep nesting to 30, as measured on m.youtube.com, is still stripped', () => {
+  const out = sjson.parse(JSON.stringify(nestAdAt(30)))
+  assert.equal(depthOfKey(out, 'adSlotRenderer'), -1)
+})
+
+check('a cyclic object does not blow the stack', () => {
+  // The property guards can be handed a live page object, unlike parsed JSON.
+  const cyclic = vm.runInContext(
+    '(function(){var a={items:[{adSlotRenderer:{}},{keep:1}]};a.self=a;a.items.push(a);return a})()',
+    sandbox
+  )
+  sandbox.window.ytInitialData = cyclic
+  const v = sandbox.window.ytInitialData
+  assert.ok(v.items.length >= 1, 'survived without recursing forever')
+  assert.equal(v.items.filter((x) => x && x.adSlotRenderer).length, 0, 'ad still removed')
 })
 
 const _ = (async () => {

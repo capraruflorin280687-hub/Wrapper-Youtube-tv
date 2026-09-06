@@ -4,18 +4,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Fire TV has no touchscreen. Without this the app is filtered out. -->
-    <uses-feature
-        android:name="android.hardware.touchscreen"
-        android:required="false" />
-    <!-- Not "required", so the same APK still installs on a phone for testing. -->
-    <uses-feature
-        android:name="android.software.leanback"
-        android:required="false" />
-
     <application
         android:allowBackup="false"
-        android:banner="@drawable/banner"
         android:hardwareAccelerated="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -25,18 +15,13 @@
         android:theme="@style/Theme.YourTOBA">
 
         <activity
-            android:name=".MainActivity"
+            android:name="com.yourtoba.MainActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode|navigation|density"
             android:exported="true"
-            android:banner="@drawable/banner"
             android:launchMode="singleTask"
-            android:screenOrientation="landscape"
             android:theme="@style/Theme.YourTOBA">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <!-- LEANBACK_LAUNCHER is what puts it on the Fire TV home row.
-                     Without it the app installs but is invisible. -->
-                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>

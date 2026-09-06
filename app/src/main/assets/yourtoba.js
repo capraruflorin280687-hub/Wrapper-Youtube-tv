@@ -25,6 +25,7 @@
 
   var AD_OBJECT_KEYS = ['adPlacements', 'adSlots', 'playerAds', 'adBreakHeartbeatParams']
   var AD_RENDERER_KEYS = [
+    // From the macOS app, seen on the TV and desktop surfaces.
     'adSlotRenderer',
     'promotedSparklesWebRenderer',
     'promotedVideoRenderer',
@@ -32,18 +33,37 @@
     'carouselAdRenderer',
     'compactPromotedVideoRenderer',
     'inFeedAdLayoutRenderer',
-    'adBadgeRenderer'
+    'adBadgeRenderer',
+    // m.youtube.com uses its own set. The signed-out feed carries no ads, so
+    // these could not be confirmed against a live response the way the TV keys
+    // were; they are the renderers the mobile site is known to use for promoted
+    // slots and upsells. Each one names an ad container, so removing the whole
+    // entry removes the ad rather than leaving an empty shell.
+    'promotedSparklesTextRenderer',
+    'compactPromotedItemRenderer',
+    'searchPyvRenderer',
+    'mealbarPromoRenderer',
+    'bannerPromoRenderer',
+    'statementBannerRenderer',
+    'brandVideoShelfRenderer',
+    'brandVideoSingletonRenderer',
+    'videoMastheadAdV3Renderer',
+    'primetimePromoRenderer',
+    'adsEngagementPanelContentRenderer'
   ]
-  // The Mac app used 14. Measured against real TVHTML5 innertube responses on
-  // 2026-09-06: a signed-out /youtubei/v1/browse home feed nests to depth 19,
-  // so 14 truncates the walk before the bottom of a real feed and can leave a
-  // deeply-nested sponsored tile in place. 24 clears the observed maximum with
-  // headroom while still bounding runaway recursion on a cyclic structure.
+  // Depth measured against real responses rather than guessed at. A TVHTML5
+  // browse feed nests to 19; the m.youtube.com home feed nests to 30. The Mac
+  // app's 14 truncated both. 40 clears the deepest thing observed with room to
+  // spare.
   //
-  // This never mattered for video ads: in a real /youtubei/v1/player response
-  // adPlacements, playerAds and adBreakHeartbeatParams all sit at depth 0, and
-  // the whole response only nests to 9.
-  var MAX_DEPTH = 24
+  // The cap is only a runaway guard, and the thing it actually needs to guard
+  // against is a cycle, not depth, so `seen` below does that job directly. That
+  // is why this number can be generous instead of being nudged upward every
+  // time YouTube adds a wrapper.
+  //
+  // Video ads never needed any of this: in a real /youtubei/v1/player response
+  // adPlacements, playerAds and adBreakHeartbeatParams all sit at depth 0.
+  var MAX_DEPTH = 40
 
   function isAdEntry(item) {
     if (!item || typeof item !== 'object') return false
@@ -61,16 +81,27 @@
     return false
   }
 
-  function stripAds(node, depth) {
+  var HAS_WEAKSET = typeof WeakSet === 'function'
+
+  function stripAds(node, depth, seen) {
     depth = depth || 0
     if (depth > MAX_DEPTH || node === null || typeof node !== 'object') return node
+
+    // Guard the real hazard. Parsed JSON is always a tree, but the property
+    // guards below can be handed a live page object, and one back-reference
+    // there would otherwise recurse until the stack gives out.
+    if (HAS_WEAKSET) {
+      if (!seen) seen = new WeakSet()
+      if (seen.has(node)) return node
+      seen.add(node)
+    }
 
     if (Array.isArray(node)) {
       for (var i = node.length - 1; i >= 0; i--) {
         if (isAdEntry(node[i])) {
           node.splice(i, 1)
         } else {
-          stripAds(node[i], depth + 1)
+          stripAds(node[i], depth + 1, seen)
         }
       }
       return node
@@ -83,7 +114,7 @@
         node[key] = []
         continue
       }
-      stripAds(node[key], depth + 1)
+      stripAds(node[key], depth + 1, seen)
     }
     return node
   }
@@ -119,6 +150,10 @@
     }
   }
 
+  // On m.youtube.com these globals are assigned a hex-escaped JSON *string*
+  // rather than an object literal, so the guards below see a string and pass it
+  // straight through. That is correct and not a gap: the page then calls
+  // JSON.parse on it, and the JSON.parse patch further down strips it there.
   guardInitialGlobal('ytInitialData')
   guardInitialGlobal('ytInitialPlayerResponse')
 

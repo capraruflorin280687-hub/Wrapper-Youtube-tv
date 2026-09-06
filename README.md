@@ -1,7 +1,14 @@
 # YourTOBA
 
-YouTube's TV interface on a Fire TV Stick, sideloaded, with the ads stripped
-out of YouTube's own data before the player ever learns they exist.
+YouTube with the ads stripped out of YouTube's own data before the player ever
+learns they exist. Two builds from one codebase:
+
+| Build | Interface | For |
+|---|---|---|
+| **YourTOBA** (`tv`) | Leanback, `youtube.com/tv`, remote control | Fire TV, Android TV |
+| **YourTOBA Mobile** (`phone`) | The ordinary mobile site, `m.youtube.com`, touch | Android phones |
+
+The ad stripping is one shared file, so a fix helps both.
 
 The Android sibling of [YouTOBA](https://github.com/FromChaosComesClarity/youTOBA),
 the macOS app. Same ad blocking, ported essentially verbatim. None of the rest.
@@ -47,8 +54,10 @@ is under About → Network.
 Then, from a machine on the same network:
 
 ```bash
-./install.sh 192.168.1.42          # build, connect, install, launch
+./install.sh 192.168.1.42          # build, connect, install, launch (TV build)
 ./install.sh 192.168.1.42 logs     # ...and tail the app's logcat
+
+FLAVOR=phone ./install.sh usb      # YourTOBA Mobile onto a USB-attached phone
 ```
 
 Accept the "Allow USB debugging?" prompt that appears on the TV the first time,
@@ -142,6 +151,37 @@ real key events.
 **Signing in** uses the `google.com/device` code flow, the one Google
 explicitly supports for TV and limited-input apps. It just works, and it is the
 reason none of the macOS app's browser-cookie-import machinery came along.
+
+## YourTOBA Mobile
+
+The phone build loads `m.youtube.com` and behaves like a browser rather than a
+TV app: touch, scrolling, Back walks history, no immersive mode, and the
+launcher entry is plain (no Leanback banner). Separate `applicationId`
+(`com.yourtoba.mobile`), so it can sit alongside the TV build.
+
+Two things it does differently, both deliberate:
+
+- **User agent.** Rather than a hardcoded string, it takes the WebView's own UA
+  and strips the `; wv` token, which is the only thing marking it as an embedded
+  WebView. Chromium generates its `Sec-CH-UA` client hints from the real engine
+  version regardless of what `setUserAgentString` says, so a hardcoded UA would
+  drift out of step with the hints sent beside it, and that disagreement is
+  exactly what Google's checks look for. Verified in the emulator: the page sees
+  a normal Chrome for Android UA with no `wv`.
+- **No codec filtering.** The default policy is `all`. The AV1 and VP9 blocking
+  exists for old Fire TV hardware; any recent phone decodes both in hardware,
+  and blocking them would only force worse quality at a higher bitrate.
+
+Verified on an Android 14 emulator with WebView 113, against live YouTube: the
+stripper installs on the document-start path, and a real `/youtubei/v1/player`
+call to the `MWEB` client arrives with `"adBreakHeartbeatParams":"Q0FBJTNE"` on
+the wire while the page receives `[]`.
+
+One finding worth recording, because it looks like a bug and is not: on
+`m.youtube.com`, `ytInitialData` is assigned a **hex-escaped JSON string**
+rather than an object literal, so the `ytInitialData` property guard passes it
+straight through untouched. That is fine. The page then calls `JSON.parse` on
+that string, and the `JSON.parse` patch strips it there instead.
 
 ## Playback and codecs
 
@@ -331,8 +371,8 @@ pass-through of non-ad endpoints, the depth ceiling, and the Back-key bridge.
 
 ```bash
 . ./env.sh
-./gradlew assembleRelease
-# app/build/outputs/apk/release/app-release.apk
+./gradlew assembleTvRelease      # app/build/outputs/apk/tv/release/app-tv-release.apk
+./gradlew assemblePhoneRelease   # app/build/outputs/apk/phone/release/app-phone-release.apk
 ```
 
 The APK is signed with `app/sideload.keystore`, which is committed on purpose.
@@ -352,7 +392,9 @@ shows the old art, restart the device from Settings, My Fire TV, Restart.
 ## Layout
 
 ```
-app/src/main/assets/yourtoba.js    the ad stripping (the actual asset)
+app/src/main/assets/yourtoba.js    the ad stripping, shared by both builds
+app/src/tv/…/Flavor.kt             TV config: Leanback URL, Cobalt UA, remote
+app/src/phone/…/Flavor.kt          phone config: mobile URL, Chrome UA, touch
 app/src/main/java/.../MainActivity.kt   WebView host, UA handshake, key handling
 app/src/main/java/.../AdBlockList.kt    network-level block rules
 app/src/main/java/.../DocumentRewriter.kt  old-WebView injection fallback

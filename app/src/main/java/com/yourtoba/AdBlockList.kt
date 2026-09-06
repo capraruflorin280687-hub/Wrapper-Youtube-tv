@@ -1,4 +1,4 @@
-package com.yourtoba.tv
+package com.yourtoba
 
 import android.net.Uri
 

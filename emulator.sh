@@ -28,8 +28,8 @@ if ! adb devices | grep -q "$DEV"; then
 fi
 
 echo "==> Building and installing"
-./gradlew --quiet assembleRelease
-adb -s "$DEV" install -r app/build/outputs/apk/release/app-release.apk
+./gradlew --quiet assembleTvRelease
+adb -s "$DEV" install -r app/build/outputs/apk/tv/release/app-tv-release.apk
 adb -s "$DEV" logcat -c
 adb -s "$DEV" shell am start -n com.yourtoba.tv/.MainActivity >/dev/null
 

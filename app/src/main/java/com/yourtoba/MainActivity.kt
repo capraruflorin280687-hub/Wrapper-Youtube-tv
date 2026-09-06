@@ -1,4 +1,4 @@
-package com.yourtoba.tv
+package com.yourtoba
 
 import android.annotation.SuppressLint
 import android.graphics.Color
@@ -32,7 +32,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val TAG = "YourTOBA"
 
-        private const val TV_URL = "https://www.youtube.com/tv"
+        private val START_URL = Flavor.START_URL
 
         // youtube.com/tv (Leanback) is gated to console/TV clients. These two UA
         // strings come from VacuumTube (MIT, github.com/shy1132/VacuumTube) by way
@@ -40,10 +40,7 @@ class MainActivity : AppCompatActivity() {
         // version on every request triggers playback issues, but works fine for
         // the one-time initial handshake. So the "client" string is used for the
         // very first navigation only, and the "ongoing" one for everything after.
-        private const val TV_CLIENT_UA =
-            "Mozilla/5.0 (PS4; Leanback Shell) Cobalt/19.lts.0-qa; compatible; YourTOBA/0.1.0"
-        private const val TV_UA =
-            "Mozilla/5.0 (PS4; Leanback Shell) Cobalt/25.lts.40.1035033; compatible; YourTOBA/0.1.0"
+        // Empty on the phone build, where the WebView's own UA is used instead.
 
         // Leanback reads .keyCode off any Event object. 27 is Escape, which is
         // what Leanback treats as "back".
@@ -133,7 +130,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        codecPolicy = prefs.getString(PREF_CODEC, CODEC_POLICIES.first()) ?: CODEC_POLICIES.first()
+        codecPolicy = prefs.getString(PREF_CODEC, Flavor.DEFAULT_CODEC_POLICY)
+            ?: Flavor.DEFAULT_CODEC_POLICY
         layerMode = prefs.getString(PREF_LAYER, LAYER_MODES.first()) ?: LAYER_MODES.first()
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -190,7 +188,7 @@ class MainActivity : AppCompatActivity() {
         // is one documented cause of "audio plays, picture stays black". It is
         // switchable rather than assumed, because it cannot be reproduced here.
         applyLayerType()
-        webView.isVerticalScrollBarEnabled = false
+        webView.isVerticalScrollBarEnabled = !Flavor.IMMERSIVE
         webView.isHorizontalScrollBarEnabled = false
         webView.addJavascriptInterface(Bridge(), "YourTOBA")
 
@@ -240,13 +238,13 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
-                if (handshakeUaActive) {
+                if (Flavor.TWO_PHASE_UA && handshakeUaActive) {
                     // The main document request has already gone out with the
                     // handshake UA. Everything from here (subresources, innertube
                     // XHRs, media) uses the ongoing UA, which mirrors how the Mac
                     // app sets the session UA and overrides only the first load.
                     handshakeUaActive = false
-                    view.settings.userAgentString = TV_UA
+                    view.settings.userAgentString = Flavor.ONGOING_UA
                     Log.i(TAG, "Handshake done, switched to ongoing Cobalt UA")
                 }
             }
@@ -311,8 +309,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        webView.settings.userAgentString = TV_CLIENT_UA
-        webView.loadUrl(TV_URL)
+        webView.settings.userAgentString =
+            if (Flavor.TWO_PHASE_UA) Flavor.HANDSHAKE_UA else mobileUserAgent()
+        webView.loadUrl(START_URL)
     }
 
     private fun applyLayerType() {
@@ -371,8 +370,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** The UA the WebView would itself send for the current phase. */
-    private fun currentUserAgent(): String =
-        if (handshakeUaActive) TV_CLIENT_UA else TV_UA
+    private fun currentUserAgent(): String = when {
+        !Flavor.TWO_PHASE_UA -> mobileUserAgent()
+        handshakeUaActive -> Flavor.HANDSHAKE_UA
+        else -> Flavor.ONGOING_UA
+    }
+
+    /**
+     * The WebView's own user agent with the "; wv" token removed, which is the
+     * only thing distinguishing it from Chrome for Android. YouTube serves a
+     * degraded page to anything it reads as an embedded WebView.
+     *
+     * Deliberately derived rather than hardcoded: Chromium builds its Sec-CH-UA
+     * client hints from the real engine version whatever setUserAgentString
+     * says, so a fixed string would drift out of step with the hints beside it,
+     * and that disagreement is exactly what Google's checks look for.
+     */
+    private fun mobileUserAgent(): String =
+        webView.settings.userAgentString
+            .replace("; wv)", ")")
+            .replace(" wv)", ")")
 
     private fun documentStartSupported(): Boolean =
         documentStartInstalled
@@ -576,12 +593,17 @@ class MainActivity : AppCompatActivity() {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.isTracking && !event.isCanceled) {
                 if (webView.url?.contains("yourtoba.local") == true) {
-                    webView.loadUrl(TV_URL)
+                    webView.loadUrl(START_URL)
                 } else if (diagnostic.visibility == View.VISIBLE) {
                     diagnostic.visibility = View.GONE
                     webView.reload()
-                } else {
+                } else if (Flavor.BACK_SENDS_ESCAPE) {
                     webView.evaluateJavascript("window.__yourtobaKey($KEYCODE_ESCAPE_DOM)", null)
+                } else if (webView.canGoBack()) {
+                    // Phone: Back walks history like any Android browser.
+                    webView.goBack()
+                } else {
+                    finish()
                 }
             }
             return true
@@ -590,7 +612,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Leanback replaces the document with a large element tree once it boots. A
+     * YouTube replaces the document with a large element tree once it boots. A
      * near-empty body after this long means it never started, which on an old
      * WebView is what happens: YouTube's own bootstrap scripts get refused and
      * nothing renders. Confirmed on WebView 55, where a plain WebView with no
@@ -602,10 +624,10 @@ class MainActivity : AppCompatActivity() {
         ) { result ->
             val count = result?.trim('"')?.toIntOrNull() ?: -1
             if (count in 0..150) {
-                Log.w(TAG, "Leanback did not boot (only $count elements); showing diagnostic")
+                Log.w(TAG, "Page did not render (only $count elements); showing diagnostic")
                 showDiagnostic(count)
             } else {
-                Log.i(TAG, "Leanback booted ($count elements)")
+                Log.i(TAG, "Page rendered ($count elements)")
                 diagnostic.visibility = View.GONE
             }
         }
@@ -628,6 +650,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun goFullscreen() {
+        if (!Flavor.IMMERSIVE) return
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_LAYOUT_STABLE

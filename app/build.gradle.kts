@@ -4,11 +4,10 @@ plugins {
 }
 
 android {
-    namespace = "com.yourtoba.tv"
+    namespace = "com.yourtoba"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.yourtoba.tv"
         // Fire OS 6 is Android 7.1 / API 25, and that is what a first-generation
         // Fire TV Stick 4K actually runs (6.7.1.1 confirmed on the target
         // device). An earlier build assumed Fire OS 7 / API 28 and simply could
@@ -22,6 +21,22 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+    }
+
+    flavorDimensions += "device"
+
+    productFlavors {
+        // Fire TV / Android TV: Leanback interface, remote control.
+        create("tv") {
+            dimension = "device"
+            applicationId = "com.yourtoba.tv"
+        }
+        // Phone: the ordinary mobile YouTube site, touch driven. Separate
+        // applicationId so both can coexist on one device if wanted.
+        create("phone") {
+            dimension = "device"
+            applicationId = "com.yourtoba.mobile"
+        }
     }
 
     signingConfigs {
