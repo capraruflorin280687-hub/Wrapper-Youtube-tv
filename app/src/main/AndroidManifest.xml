@@ -28,6 +28,7 @@
             android:name=".MainActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode|navigation|density"
             android:exported="true"
+            android:banner="@drawable/banner"
             android:launchMode="singleTask"
             android:screenOrientation="landscape"
             android:theme="@style/Theme.YourTOBA">

@@ -66,7 +66,16 @@ function check(name, fn) {
 
 console.log('\nyourtoba.js codec policy\n')
 
-// ---- default policy: block AV1 only ------------------------------------
+// ---- h264-only is the shipped default for Fire TV ----------------------
+{
+  const { sandbox } = makeSandbox(undefined)
+  check('with no policy set, the script defaults to blocking AV1', () => {
+    // the native side always supplies one; this guards the standalone default
+    assert.equal(sandbox.MediaSource.isTypeSupported(AV1), false)
+  })
+}
+
+// ---- policy: block AV1 only --------------------------------------------
 {
   const { sandbox } = makeSandbox('no-av1')
   const MS = sandbox.MediaSource

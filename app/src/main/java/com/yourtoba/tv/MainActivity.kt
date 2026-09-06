@@ -15,6 +15,8 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.ConsoleMessage
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -70,19 +72,24 @@ class MainActivity : AppCompatActivity() {
         private const val BOOT_CHECK_DELAY_MS = 15_000L
 
         /**
-         * Which video codecs the page is allowed to claim it can play.
+         * Which video codecs the page may claim it can play, in cycle order.
          *
-         * A first-generation Fire TV Stick 4K has no AV1 hardware decoder, but
-         * Chromium's software AV1 decoder makes the WebView answer "supported"
-         * anyway, so YouTube serves AV1 and the stick chokes: audio with a black
-         * screen, or heavy stutter. "no-av1" leaves VP9 and H.264, both of which
-         * that device decodes in hardware.
+         * The default is h264-only, not the more conservative-sounding no-av1.
+         * A first-generation Fire TV Stick 4K has no AV1 hardware decoder, and
+         * older Fire TV sticks do not hardware-decode VP9 either, so H.264 is
+         * the only codec that is certain to reach the hardware decoder. Blocking
+         * AV1 alone made things worse rather than better, because everything
+         * then landed on VP9. This is the same reasoning behind h264ify.
          *
-         *   "no-av1"    block AV1 only (default)
-         *   "h264-only" also block VP9, if VP9 turns out to be unreliable too
+         *   "h264-only" block AV1 and VP9, leaving H.264 (default)
+         *   "no-av1"    block AV1 only
          *   "all"       no filtering
          */
-        private const val CODEC_POLICY = "no-av1"
+        private val CODEC_POLICIES = listOf("h264-only", "no-av1", "all")
+
+        private const val PREFS = "yourtoba"
+        private const val PREF_CODEC = "codec_policy"
+        private const val PREF_HW_LAYER = "hw_layer"
 
         private const val STATS_POLL_MS = 1000L
     }
@@ -91,6 +98,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var diagnostic: TextView
     private lateinit var stats: TextView
     private var statsVisible = false
+    private lateinit var prefs: android.content.SharedPreferences
+    private var codecPolicy = "h264-only"
+    private var hwLayer = true
     private val handler = Handler(Looper.getMainLooper())
     private val statsHandler = Handler(Looper.getMainLooper())
 
@@ -101,10 +111,15 @@ class MainActivity : AppCompatActivity() {
 
     /** False if the preferred path was unavailable or refused at install time. */
     private var documentStartInstalled = false
+    private var documentStartScript: androidx.webkit.ScriptHandler? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        codecPolicy = prefs.getString(PREF_CODEC, CODEC_POLICIES.first()) ?: CODEC_POLICIES.first()
+        hwLayer = prefs.getBoolean(PREF_HW_LAYER, true)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         goFullscreen()
@@ -155,12 +170,57 @@ class MainActivity : AppCompatActivity() {
         configureSettings(webView.settings)
         configureCookies(webView)
 
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        // Forcing a hardware layer is what NoTubeTV does, but an offscreen
+        // hardware layer can stop a WebView's video overlay compositing, which
+        // is one documented cause of "audio plays, picture stays black". It is
+        // switchable rather than assumed, because it cannot be reproduced here.
+        applyLayerType()
         webView.isVerticalScrollBarEnabled = false
         webView.isHorizontalScrollBarEnabled = false
         webView.addJavascriptInterface(Bridge(), "YourTOBA")
 
         installAdStripper()
+
+        // HTML5 video in a WebView is meant to have a WebChromeClient. Without
+        // one, a page asking to go fullscreen gets no answer, and some WebView
+        // builds decline to render video at all. It also gives us the page's
+        // console in logcat, which is the only window into what Leanback's
+        // player is complaining about on a TV across the room.
+        webView.webChromeClient = object : WebChromeClient() {
+            private var customView: View? = null
+
+            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                if (customView != null) {
+                    callback.onCustomViewHidden()
+                    return
+                }
+                customView = view
+                (window.decorView as android.view.ViewGroup).addView(
+                    view,
+                    android.view.ViewGroup.LayoutParams(MATCH, MATCH)
+                )
+                goFullscreen()
+            }
+
+            override fun onHideCustomView() {
+                customView?.let {
+                    (window.decorView as android.view.ViewGroup).removeView(it)
+                }
+                customView = null
+                goFullscreen()
+            }
+
+            override fun onConsoleMessage(m: ConsoleMessage): Boolean {
+                if (m.messageLevel() == ConsoleMessage.MessageLevel.ERROR ||
+                    m.message().contains("video", true) ||
+                    m.message().contains("codec", true) ||
+                    m.message().contains("decode", true)
+                ) {
+                    Log.w(TAG, "page: ${m.message().take(220)}")
+                }
+                return true
+            }
+        }
 
         webView.webViewClient = object : WebViewClient() {
 
@@ -232,6 +292,14 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl(TV_URL)
     }
 
+    private fun applyLayerType() {
+        webView.setLayerType(
+            if (hwLayer) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_SOFTWARE,
+            null
+        )
+        Log.i(TAG, "Layer type: ${if (hwLayer) "hardware" else "software"}")
+    }
+
     private fun configureSettings(settings: WebSettings) {
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
@@ -278,7 +346,8 @@ class MainActivity : AppCompatActivity() {
         val source = adStripperSource()
         if (documentStartFeatureAvailable()) {
             try {
-                WebViewCompat.addDocumentStartJavaScript(webView, source, ALLOWED_ORIGINS)
+                documentStartScript =
+                    WebViewCompat.addDocumentStartJavaScript(webView, source, ALLOWED_ORIGINS)
                 Log.i(TAG, "Ad stripper installed at document start (preferred path)")
                 documentStartInstalled = true
             } catch (e: Exception) {
@@ -318,9 +387,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun adStripperSource(): String {
         cachedSource?.let { return it }
+        // note: cleared by changeCodecPolicy so a new policy actually ships
         val js = assets.open("yourtoba.js").bufferedReader().use { it.readText() }
         val prelude = "window.__yourtobaSpoof4K = $SPOOF_4K;\n" +
-            "window.__yourtobaCodecPolicy = '$CODEC_POLICY';\n"
+            "window.__yourtobaCodecPolicy = '$codecPolicy';\n"
         return (prelude + js).also { cachedSource = it }
     }
 
@@ -334,13 +404,36 @@ class MainActivity : AppCompatActivity() {
      * Short press goes back inside Leanback. Long press exits the app. (The Fire
      * TV Home button also always works, so there is no way to get stuck.)
      */
+    /**
+     * Overlay controls have to be handled here rather than in onKeyDown. The
+     * WebView holds focus and consumes d-pad keys for Leanback navigation, so
+     * Activity.onKeyDown never sees them. dispatchKeyEvent runs before the view
+     * hierarchy gets a look.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val down = event.action == KeyEvent.ACTION_DOWN
+
+        if (event.keyCode == KeyEvent.KEYCODE_MENU || event.keyCode == KeyEvent.KEYCODE_INFO) {
+            if (down) toggleStats()
+            return true
+        }
+
+        if (statsVisible) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_RIGHT -> { if (down) cycleCodecPolicy(1); return true }
+                KeyEvent.KEYCODE_DPAD_LEFT -> { if (down) cycleCodecPolicy(-1); return true }
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (down) toggleLayerType(); return true
+                }
+            }
+        }
+
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             event.startTracking()
-            return true
-        }
-        if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_INFO) {
-            toggleStats()
             return true
         }
         return super.onKeyDown(keyCode, event)
@@ -352,6 +445,37 @@ class MainActivity : AppCompatActivity() {
         statsHandler.removeCallbacksAndMessages(null)
         if (statsVisible) pollStats()
         Log.i(TAG, "Stats overlay ${if (statsVisible) "on" else "off"}")
+    }
+
+    private fun cycleCodecPolicy(step: Int) {
+        val i = CODEC_POLICIES.indexOf(codecPolicy).coerceAtLeast(0)
+        codecPolicy = CODEC_POLICIES[((i + step) % CODEC_POLICIES.size + CODEC_POLICIES.size) % CODEC_POLICIES.size]
+        prefs.edit().putString(PREF_CODEC, codecPolicy).apply()
+        Log.i(TAG, "Codec policy -> $codecPolicy (reloading)")
+        cachedSource = null
+        reinstallAndReload()
+    }
+
+    private fun toggleLayerType() {
+        hwLayer = !hwLayer
+        prefs.edit().putBoolean(PREF_HW_LAYER, hwLayer).apply()
+        applyLayerType()
+        reinstallAndReload()
+    }
+
+    /**
+     * The stripper is injected at document start, so a settings change only
+     * takes effect once the script is re-registered and the page reloaded.
+     */
+    private fun reinstallAndReload() {
+        stats.text = "applying..."
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            documentStartScript?.remove()
+            documentStartScript = null
+            documentStartInstalled = false
+        }
+        installAdStripper()
+        webView.reload()
     }
 
     private fun pollStats() {
@@ -376,7 +500,10 @@ class MainActivity : AppCompatActivity() {
             for (key in json.keys()) {
                 append(key).append(": ").append(json.optString(key)).append('\n')
             }
-            append("(Menu to hide)")
+            append("layer: ").append(if (hwLayer) "hardware" else "software").append('\n')
+            append("\nLeft/Right: codec policy\n")
+            append("Up/Down: layer type\n")
+            append("Menu: hide")
         }
     }
 

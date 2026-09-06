@@ -133,7 +133,9 @@ real key events.
 | D-pad, Select | Navigate, as normal |
 | Back (press) | Back inside Leanback |
 | Back (hold) | Exit the app |
-| Menu (or Info) | Toggle the playback stats overlay |
+| Menu (or Info) | Toggle the playback stats and settings overlay |
+| Left / Right *(overlay open)* | Cycle the codec policy |
+| Up / Down *(overlay open)* | Toggle hardware / software layer |
 | Home | Leaves the app, as always |
 
 **Signing in** uses the `google.com/device` code flow, the one Google
@@ -142,51 +144,65 @@ reason none of the macOS app's browser-cookie-import machinery came along.
 
 ## Playback and codecs
 
-Symptoms on a first-generation Fire TV Stick 4K: most videos played with sound
-but a black screen, some started black then stuttered badly, a few were fine.
+On a first-generation Fire TV Stick 4K, most videos played with sound over a
+black screen, some stuttered heavily, a few were fine.
 
-That is what a missing hardware decoder looks like. Chromium ships a **software**
-AV1 decoder, so a WebView answers "yes, I support AV1" regardless of the
-hardware underneath. YouTube believes it and serves AV1. That stick decodes
-H.264, HEVC and VP9 in hardware but has no AV1 decoder at all, so it falls back
-to decoding AV1 on a quad Cortex-A53: it drops every frame and shows black while
-audio keeps going, or half keeps up and stutters.
+The cause is a codec the hardware cannot decode. That stick decodes **H.264**
+and HEVC in hardware. It has **no AV1 decoder**, and
+[older Fire TV sticks do not hardware-decode VP9 either](https://forums.developer.amazon.com/questions/214779/firetv-youtube-stream-4k-support-vp9-codec-problem.html).
+Chromium ships *software* decoders for both, so the WebView cheerfully answers
+"supported" and YouTube serves them, leaving a quad Cortex-A53 to decode 1080p
+in software. It drops every frame, which is the black picture with working
+audio.
 
-So YourTOBA stops claiming AV1 support. Leanback asks three separate ways and
-all three have to agree or it will still choose a format the device cannot play:
+An early attempt blocked AV1 only. That made things strictly worse, because
+everything then landed on VP9. The lesson is that on this hardware H.264 is the
+only codec guaranteed to reach a hardware decoder, which is exactly the reasoning
+behind [h264ify](https://github.com/Alex313031/Thorium-H264ify). So
+**`h264-only` is the default.**
 
-- `MediaSource.isTypeSupported`
-- `HTMLMediaElement.prototype.canPlayType`
-- `navigator.mediaCapabilities.decodingInfo`
+Leanback decides what to request through three separate APIs and all three have
+to agree, so all three are patched: `MediaSource.isTypeSupported`,
+`HTMLMediaElement.prototype.canPlayType`, and
+`navigator.mediaCapabilities.decodingInfo`.
 
-Verified in a real WebView: AV1 is refused by all three, while VP9, H.264 and
-audio pass through untouched.
+### Changing it from the sofa
 
-`CODEC_POLICY` in `MainActivity.kt` controls it:
+The policy is switchable at runtime, because which codec a given device can
+actually decode is not something that can be settled from a desk. Press **Menu**
+for the overlay, then **Left/Right** to cycle:
 
-| Value | Effect |
-|---|---|
-| `no-av1` | Block AV1, keep VP9 and H.264. **Default.** |
-| `h264-only` | Also block VP9, forcing H.264. Try this if VP9 also misbehaves. |
-| `all` | No filtering. |
+| Policy | Blocks | Use when |
+|---|---|---|
+| `h264-only` | AV1, VP9 | **Default.** Old Fire TV hardware. |
+| `no-av1` | AV1 | The device handles VP9 fine and you want better quality. |
+| `all` | nothing | Modern hardware, or to compare against. |
 
-### Seeing what is actually playing
+**Up/Down** toggles the WebView between a hardware and a software layer. Forcing
+a hardware layer is what other Leanback shells do, but an offscreen hardware
+layer can break video overlay compositing, which is another documented cause of
+audio-without-picture. Both settings persist across restarts.
 
-Press **Menu** (or Info) on the remote for a stats overlay: the active policy,
-the codecs the player actually asked for, video size, and dropped frames.
+The overlay also reports the codecs the player actually requested, the video
+size, and the dropped frame count, so the answer comes from the device rather
+than from inference.
 
 ![Stats overlay](docs/evidence/stats-overlay.png)
 
-If a video still misbehaves, that overlay is the thing to read. A high dropped
-frame count means the decoder is still struggling, and `h264-only` is the next
-thing to try. The same lines also go to logcat, so `./install.sh <ip> logs`
-captures them.
+### If none of the policies help
 
-One caveat on this fix: the symptoms and the hardware both point squarely at
-AV1, but it could not be confirmed directly, because YouTube will not hand a TV
-client's format list to an unauthenticated request and the emulators available
-here run WebViews that predate AV1 entirely. The overlay exists so the answer
-comes from the actual device rather than from inference.
+Worth knowing that this is a known, unsolved problem for WebView-based YouTube
+clients on Fire TV: NoTubeTV carries
+[an open issue](https://github.com/ycngmn/NoTubeTV/issues/21) with the same
+symptom on the same hardware, where a tester reported that changing the user
+agent, comparing codecs and switching layer types all failed to fix it, and
+concluded Amazon's WebView fork is at fault.
+
+If `h264-only` with both layer types still gives a black picture, the honest
+conclusion is that this device's WebView cannot render YouTube's player, and a
+native client such as [SmartTube](https://github.com/yuliskov/SmartTube) is the
+answer. The other direction, replacing the system WebView with a bundled
+GeckoView, is a large change and unproven for Leanback.
 
 ## Ad blocking
 
@@ -259,6 +275,16 @@ pass-through of non-ad endpoints, the depth ceiling, and the Back-key bridge.
 The APK is signed with `app/sideload.keystore`, which is committed on purpose.
 This is a personal sideload build, not a Play Store release, and losing the key
 would mean uninstalling and reinstalling on the TV to change signer.
+
+## The Fire TV banner
+
+Fire TV shows apps on the home row using a **banner**, a 320x180 xhdpi image,
+which is a different asset from the launcher icon. It is declared on both the
+`<application>` and the leanback activity, and shipped at xhdpi and xxhdpi.
+
+Fire OS caches launcher artwork aggressively, so a banner change often will not
+appear on an update alone. To force it: uninstall, reinstall, and if it still
+shows the old art, restart the device from Settings, My Fire TV, Restart.
 
 ## Layout
 
