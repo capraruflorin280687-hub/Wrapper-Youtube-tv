@@ -27,8 +27,12 @@ SponsorBlock.
 - A Fire TV that runs **Fire OS**, which means Android underneath.
   **Not Vega OS.** Amazon's Fire TV Stick 4K Select (Oct 2025) and Fire TV
   Stick HD (2026) run Vega and cannot sideload anything at all. Check under
-  Settings → My Fire TV → About. Fire OS 7 (Android 9) or Fire OS 8
-  (Android 11) are both fine.
+  Settings → My Fire TV → About.
+- **`minSdk` is 21**, so Fire OS 5, 6, 7 and 8 all install. It was briefly 28,
+  which silently excluded Fire OS 6 devices such as the first-generation Fire TV
+  Stick 4K; see the troubleshooting note below.
+- **A reasonably current WebView**, and this is the real constraint. See
+  [WebView requirement](#webview-requirement).
 - ADB debugging enabled on the device (see below).
 - For building: JDK 17 and the Android SDK. `env.sh` points at a userspace
   install of both, so nothing needs root.
@@ -61,20 +65,59 @@ If ADB is not an option, serve the APK to the TV over your LAN:
 It prints a URL. On the Fire TV, open the **Downloader** app, type that URL, and
 install what it fetches.
 
+### WebView requirement
+
+YourTOBA renders YouTube's own TV site, so it is only ever as capable as the
+device's WebView. Measured on Android TV emulators:
+
+| WebView | Result |
+|---|---|
+| 66 (API 28 image) | Leanback boots and renders. Works. |
+| 55 (API 25 image) | Blank screen. YouTube's own start-up scripts are refused. |
+
+The WebView 55 failure is **not** caused by this app. With injection disabled
+entirely, a plain WebView loading `youtube.com/tv` fails in exactly the same way
+with the same two CSP script refusals. YouTube's bootstrap attaches its scripts
+dynamically, and that engine will not run them. No shell can work around it.
+
+If Leanback does not boot, the app stops showing a black rectangle and explains
+itself, naming the WebView version it found:
+
+![Old WebView diagnostic](docs/evidence/old-webview-diagnostic.png)
+
+If you land on that screen, try updating Amazon WebView or Chrome from the
+Appstore. If there is no update available, the device is simply too old for a
+WebView-based YouTube client, and a native one such as
+[SmartTube](https://github.com/yuliskov/SmartTube) is the right answer, because
+it talks to the innertube API directly and never renders YouTube's web UI.
+
+Note for first-generation Fire TV Stick 4K owners: that device is
+[not getting Fire OS 7](https://www.aftvnews.com/fire-tv-stick-4k-is-not-getting-fire-os-7-with-the-new-interface-update/),
+and 6.7.1.1 is its final firmware. Its WebView can still be updated separately
+from Fire OS, so the version the diagnostic reports is the number that matters,
+not the Fire OS version.
+
 ### If the installer says "split or bad apk"
 
 That message comes from a third-party installer, not from Android itself, and it
 usually means one of three things.
 
-1. **The APK lost its v1 signature.** Builds before 2026-09-06 were signed with
+1. **The APK's `minSdk` is higher than the device.** This was the actual cause
+   on a Fire OS 6 device: the package declared `minSdk 28` while Fire OS 6 is
+   Android 7.1 / API 25. The platform's own message is
+   `INSTALL_FAILED_OLDER_SDK: Failed parse during installPackageLI`, and it is
+   that word "parse" that sideload installers surface as "bad apk". Current
+   builds declare `minSdk 21`. Check with
+   `aapt2 dump badging dist/YourTOBA-0.1.0.apk | grep sdkVersion`.
+2. **The APK lost its v1 signature.** Builds before 2026-09-06 were signed with
    the v2 scheme only, which Android 9+ accepts but several Fire TV sideload
    apps reject as malformed. Current builds are signed v1, v2 and v3. Check with
    `apksigner verify --verbose --min-sdk-version 21 dist/YourTOBA-0.1.0.apk`,
    which should report v1, v2 and v3 all true.
-2. **The file was truncated or rewritten in transit.** Anything that proxies or
+3. **The file was truncated or rewritten in transit.** Anything that proxies or
    re-encodes a download can do this. Compare the checksum on the device against
    `sha256sum dist/YourTOBA-0.1.0.apk`; `./serve.sh` prints it for you.
-3. **The installer genuinely cannot handle a plain APK.** Some file managers only
+4. **The installer genuinely cannot handle a plain APK.** Some file managers only
    understand `.apks` bundles. Use Downloader, or `./install.sh`.
 
 `./install.sh <ip>` avoids all of this, because `adb install` hands the package

@@ -2,12 +2,17 @@ package com.yourtoba.tv
 
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.os.Handler
+import android.os.Looper
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.view.Gravity
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.TextView
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
@@ -57,9 +62,16 @@ class MainActivity : AppCompatActivity() {
         )
 
         private const val EMPTY_RESPONSE_MIME = "text/plain"
+
+        private const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
+
+        /** How long Leanback gets to put something on screen before we explain. */
+        private const val BOOT_CHECK_DELAY_MS = 15_000L
     }
 
     private lateinit var webView: WebView
+    private lateinit var diagnostic: TextView
+    private val handler = Handler(Looper.getMainLooper())
 
     /** True until the first navigation commits, so the Cobalt handshake UA is used once. */
     private var handshakeUaActive = true
@@ -78,7 +90,25 @@ class MainActivity : AppCompatActivity() {
 
         webView = WebView(this)
         webView.setBackgroundColor(Color.BLACK)
-        setContentView(webView)
+
+        // Leanback failing to boot otherwise looks like a black screen with no
+        // explanation, and the cause is almost always the device's WebView being
+        // too old rather than anything in this app. Say so on screen, since the
+        // person looking at it is across the room with a remote, not at a laptop
+        // reading logcat.
+        diagnostic = TextView(this).apply {
+            setBackgroundColor(Color.BLACK)
+            setTextColor(Color.WHITE)
+            textSize = 18f
+            gravity = Gravity.CENTER
+            setPadding(96, 96, 96, 96)
+            visibility = View.GONE
+        }
+
+        setContentView(FrameLayout(this).apply {
+            addView(webView, FrameLayout.LayoutParams(MATCH, MATCH))
+            addView(diagnostic, FrameLayout.LayoutParams(MATCH, MATCH))
+        })
 
         // On unconditionally, not just in debug builds. This is a personal
         // sideload app on a device where ADB is already enabled (you cannot
@@ -109,6 +139,12 @@ class MainActivity : AppCompatActivity() {
                     view.settings.userAgentString = TV_UA
                     Log.i(TAG, "Handshake done, switched to ongoing Cobalt UA")
                 }
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                if (!url.startsWith("http")) return
+                handler.removeCallbacksAndMessages(null)
+                handler.postDelayed({ checkLeanbackBooted() }, BOOT_CHECK_DELAY_MS)
             }
 
             override fun shouldInterceptRequest(
@@ -205,7 +241,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun installAdStripper() {
         val source = adStripperSource()
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+        if (documentStartFeatureAvailable()) {
             try {
                 WebViewCompat.addDocumentStartJavaScript(webView, source, ALLOWED_ORIGINS)
                 Log.i(TAG, "Ad stripper installed at document start (preferred path)")
@@ -224,9 +260,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun currentWebViewVersion(): String =
+    /**
+     * androidx.webkit queries the WebView provider to answer this, and on a very
+     * old or unusual provider that lookup can throw rather than return false.
+     * Treat any failure as "not available" and let the rewrite fallback run.
+     */
+    private fun documentStartFeatureAvailable(): Boolean = try {
+        WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+    } catch (e: Throwable) {
+        Log.w(TAG, "WebView feature probe failed (${e.message}); assuming unsupported")
+        false
+    }
+
+    private fun currentWebViewVersion(): String = try {
         WebViewCompat.getCurrentWebViewPackage(this)?.let { "${it.packageName} ${it.versionName}" }
             ?: "unknown"
+    } catch (e: Throwable) {
+        "unknown"
+    }
 
     private var cachedSource: String? = null
 
@@ -267,11 +318,54 @@ class MainActivity : AppCompatActivity() {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.isTracking && !event.isCanceled) {
-                webView.evaluateJavascript("window.__yourtobaKey($KEYCODE_ESCAPE_DOM)", null)
+                if (diagnostic.visibility == View.VISIBLE) {
+                    diagnostic.visibility = View.GONE
+                    webView.reload()
+                } else {
+                    webView.evaluateJavascript("window.__yourtobaKey($KEYCODE_ESCAPE_DOM)", null)
+                }
             }
             return true
         }
         return super.onKeyUp(keyCode, event)
+    }
+
+    /**
+     * Leanback replaces the document with a large element tree once it boots. A
+     * near-empty body after this long means it never started, which on an old
+     * WebView is what happens: YouTube's own bootstrap scripts get refused and
+     * nothing renders. Confirmed on WebView 55, where a plain WebView with no
+     * involvement from this app fails exactly the same way.
+     */
+    private fun checkLeanbackBooted() {
+        webView.evaluateJavascript(
+            "(function(){try{return document.getElementsByTagName('*').length}catch(e){return -1}})()"
+        ) { result ->
+            val count = result?.trim('"')?.toIntOrNull() ?: -1
+            if (count in 0..150) {
+                Log.w(TAG, "Leanback did not boot (only $count elements); showing diagnostic")
+                showDiagnostic(count)
+            } else {
+                Log.i(TAG, "Leanback booted ($count elements)")
+                diagnostic.visibility = View.GONE
+            }
+        }
+    }
+
+    private fun showDiagnostic(elementCount: Int) {
+        diagnostic.text = buildString {
+            append("YourTOBA cannot render YouTube on this device.\n\n")
+            append("The ad blocking is working. The problem is the browser engine:\n")
+            append(currentWebViewVersion())
+            append("\n\nYouTube's TV interface needs a newer WebView than this one. ")
+            append("Its own start-up scripts are refused by this engine, so the page ")
+            append("stays empty. Nothing this app does can work around that.\n\n")
+            append("Try updating Amazon WebView, or Chrome, from the Appstore. ")
+            append("If there is no update, this device is too old for a WebView-based ")
+            append("YouTube client, and a native one such as SmartTube is the way to go.\n\n")
+            append("(Press Back to retry, hold Back to exit. Elements rendered: $elementCount)")
+        }
+        diagnostic.visibility = View.VISIBLE
     }
 
     private fun goFullscreen() {
@@ -303,6 +397,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         webView.destroy()
         super.onDestroy()
     }

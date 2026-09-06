@@ -1,5 +1,13 @@
 # YourTOBA: Fire TV 4K port
 
+> **Correction, 2026-09-06:** section 2 below asserts that a Fire TV Stick 4K
+> runs Fire OS 7 (Android 9, API 28). That is wrong for the first-generation
+> 4K stick, which runs **Fire OS 6 (Android 7.1, API 25)** and is not getting
+> Fire OS 7. Building against `minSdk 28` on that assumption produced an APK
+> that could not be installed at all. `minSdk` is now 21. The lesson is the one
+> already in the standing instructions: the device's actual OS version was
+> checkable and I asserted it instead.
+>
 > **Status, 2026-09-06:** implemented. Phases 1 to 3 below are done and the APK
 > builds. This document is kept as the historical scoping record, written before
 > any code and before the project was named YourTOBA; the reasoning still holds,

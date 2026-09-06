@@ -9,9 +9,16 @@ android {
 
     defaultConfig {
         applicationId = "com.yourtoba.tv"
-        // Fire OS 7 is Android 9 / API 28. Nothing here needs anything newer,
-        // and there are no native libraries, so ABI never comes into it.
-        minSdk = 28
+        // Fire OS 6 is Android 7.1 / API 25, and that is what a first-generation
+        // Fire TV Stick 4K actually runs (6.7.1.1 confirmed on the target
+        // device). An earlier build assumed Fire OS 7 / API 28 and simply could
+        // not be installed: sideload installers report that as "split or bad
+        // apk" rather than naming the SDK mismatch.
+        //
+        // 21 rather than 25, because every API used here landed in 21 and it
+        // costs nothing to also cover Fire OS 5 devices. There are no native
+        // libraries, so ABI never comes into it.
+        minSdk = 21
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
