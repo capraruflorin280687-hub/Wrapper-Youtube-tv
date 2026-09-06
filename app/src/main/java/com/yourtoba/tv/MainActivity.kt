@@ -89,7 +89,22 @@ class MainActivity : AppCompatActivity() {
 
         private const val PREFS = "yourtoba"
         private const val PREF_CODEC = "codec_policy"
-        private const val PREF_HW_LAYER = "hw_layer"
+        private const val PREF_LAYER = "layer_mode"
+
+        /**
+         * LAYER_TYPE_NONE is the important one and was missing before.
+         *
+         * LAYER_TYPE_HARDWARE renders the WebView into an offscreen hardware
+         * texture, and a hole-punched video SurfaceView cannot composite into an
+         * offscreen layer, which produces exactly this app's symptom: audio
+         * plays, page and controls render, video area stays black.
+         * LAYER_TYPE_SOFTWARE is worse still, since it rules out accelerated
+         * video altogether. NONE is the platform default and the only one of the
+         * three that leaves the normal video overlay path intact.
+         */
+        private val LAYER_MODES = listOf("none", "hardware", "software")
+
+        private const val SELFTEST_URL = "https://yourtoba.local/selftest.html"
 
         private const val STATS_POLL_MS = 1000L
     }
@@ -100,7 +115,7 @@ class MainActivity : AppCompatActivity() {
     private var statsVisible = false
     private lateinit var prefs: android.content.SharedPreferences
     private var codecPolicy = "h264-only"
-    private var hwLayer = true
+    private var layerMode = "none"
     private val handler = Handler(Looper.getMainLooper())
     private val statsHandler = Handler(Looper.getMainLooper())
 
@@ -119,7 +134,7 @@ class MainActivity : AppCompatActivity() {
 
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         codecPolicy = prefs.getString(PREF_CODEC, CODEC_POLICIES.first()) ?: CODEC_POLICIES.first()
-        hwLayer = prefs.getBoolean(PREF_HW_LAYER, true)
+        layerMode = prefs.getString(PREF_LAYER, LAYER_MODES.first()) ?: LAYER_MODES.first()
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         goFullscreen()
@@ -238,6 +253,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 if (!url.startsWith("http")) return
+                if (url.contains("yourtoba.local")) return
                 handler.removeCallbacksAndMessages(null)
                 handler.postDelayed({ checkLeanbackBooted() }, BOOT_CHECK_DELAY_MS)
             }
@@ -247,6 +263,13 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest
             ): WebResourceResponse? {
                 val uri: Uri = request.url
+
+                // The self-test is served from assets under an https origin
+                // rather than file://, so the page is a normal secure origin and
+                // canvas can read the decoded video without tainting.
+                if (uri.host == "yourtoba.local") {
+                    serveAsset(uri.lastPathSegment)?.let { return it }
+                }
 
                 // Old-WebView fallback: rewrite the top-level document so the
                 // stripper is the first script in it. See DocumentRewriter for
@@ -294,10 +317,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyLayerType() {
         webView.setLayerType(
-            if (hwLayer) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_SOFTWARE,
+            when (layerMode) {
+                "hardware" -> View.LAYER_TYPE_HARDWARE
+                "software" -> View.LAYER_TYPE_SOFTWARE
+                else -> View.LAYER_TYPE_NONE
+            },
             null
         )
-        Log.i(TAG, "Layer type: ${if (hwLayer) "hardware" else "software"}")
+        Log.i(TAG, "Layer type: $layerMode")
     }
 
     private fun configureSettings(settings: WebSettings) {
@@ -319,6 +346,22 @@ class MainActivity : AppCompatActivity() {
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(view, true)
+        }
+    }
+
+    private fun serveAsset(name: String?): WebResourceResponse? {
+        val safe = name?.takeIf { it.matches(Regex("[A-Za-z0-9_.-]+")) } ?: return null
+        val mime = when {
+            safe.endsWith(".html") -> "text/html"
+            safe.endsWith(".mp4") -> "video/mp4"
+            safe.endsWith(".js") -> "application/javascript"
+            else -> "application/octet-stream"
+        }
+        return try {
+            WebResourceResponse(mime, "utf-8", 200, "OK", HashMap(), assets.open(safe))
+        } catch (e: Exception) {
+            Log.w(TAG, "asset $safe missing: ${e.message}")
+            null
         }
     }
 
@@ -422,8 +465,10 @@ class MainActivity : AppCompatActivity() {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_DPAD_RIGHT -> { if (down) cycleCodecPolicy(1); return true }
                 KeyEvent.KEYCODE_DPAD_LEFT -> { if (down) cycleCodecPolicy(-1); return true }
-                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (down) toggleLayerType(); return true
+                KeyEvent.KEYCODE_DPAD_UP -> { if (down) cycleLayerMode(-1); return true }
+                KeyEvent.KEYCODE_DPAD_DOWN -> { if (down) cycleLayerMode(1); return true }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                    if (down) openSelfTest(); return true
                 }
             }
         }
@@ -456,11 +501,21 @@ class MainActivity : AppCompatActivity() {
         reinstallAndReload()
     }
 
-    private fun toggleLayerType() {
-        hwLayer = !hwLayer
-        prefs.edit().putBoolean(PREF_HW_LAYER, hwLayer).apply()
+    private fun cycleLayerMode(step: Int) {
+        val i = LAYER_MODES.indexOf(layerMode).coerceAtLeast(0)
+        layerMode = LAYER_MODES[((i + step) % LAYER_MODES.size + LAYER_MODES.size) % LAYER_MODES.size]
+        prefs.edit().putString(PREF_LAYER, layerMode).apply()
         applyLayerType()
         reinstallAndReload()
+    }
+
+    /** Loads the bundled self-test, which answers decode versus compositing. */
+    private fun openSelfTest() {
+        statsVisible = false
+        stats.visibility = View.GONE
+        diagnostic.visibility = View.GONE
+        Log.i(TAG, "Opening video self-test")
+        webView.loadUrl(SELFTEST_URL)
     }
 
     /**
@@ -500,9 +555,10 @@ class MainActivity : AppCompatActivity() {
             for (key in json.keys()) {
                 append(key).append(": ").append(json.optString(key)).append('\n')
             }
-            append("layer: ").append(if (hwLayer) "hardware" else "software").append('\n')
+            append("layer: ").append(layerMode).append('\n')
             append("\nLeft/Right: codec policy\n")
             append("Up/Down: layer type\n")
+            append("Select: run video self-test\n")
             append("Menu: hide")
         }
     }
@@ -519,7 +575,9 @@ class MainActivity : AppCompatActivity() {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.isTracking && !event.isCanceled) {
-                if (diagnostic.visibility == View.VISIBLE) {
+                if (webView.url?.contains("yourtoba.local") == true) {
+                    webView.loadUrl(TV_URL)
+                } else if (diagnostic.visibility == View.VISIBLE) {
                     diagnostic.visibility = View.GONE
                     webView.reload()
                 } else {
@@ -609,6 +667,11 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onInjected(url: String) {
             Log.i(TAG, "Ad stripper active on $url")
+        }
+
+        @JavascriptInterface
+        fun selfTestResult(summary: String) {
+            Log.i(TAG, "SELFTEST: $summary")
         }
     }
 }

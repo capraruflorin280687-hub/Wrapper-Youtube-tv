@@ -135,7 +135,8 @@ real key events.
 | Back (hold) | Exit the app |
 | Menu (or Info) | Toggle the playback stats and settings overlay |
 | Left / Right *(overlay open)* | Cycle the codec policy |
-| Up / Down *(overlay open)* | Toggle hardware / software layer |
+| Up / Down *(overlay open)* | Cycle layer type: none / hardware / software |
+| Select *(overlay open)* | Run the video self-test |
 | Home | Leaves the app, as always |
 
 **Signing in** uses the `google.com/device` code flow, the one Google
@@ -189,6 +190,28 @@ than from inference.
 
 ![Stats overlay](docs/evidence/stats-overlay.png)
 
+### The video self-test
+
+Press **Menu**, then **Select**, to run a bundled self-test. It plays a local
+H.264 baseline file (no YouTube, no network) and reports what happened.
+
+![Video self-test](docs/evidence/video-selftest.png)
+
+The trick is that it draws the video into a canvas and samples the pixels, which
+reads the *decoded frame* independently of whether the compositor ever puts it
+on screen. That separates two failures that look identical on a TV:
+
+| Self-test says | Screen shows | Meaning |
+|---|---|---|
+| decoded pixels PASS | test pattern visible | The WebView is fine. The problem is YouTube-specific. |
+| decoded pixels PASS | still black | **Compositing.** Frames decode but never reach the screen. Change layer type. |
+| decoded pixels FAIL, position advances | black | The WebView cannot decode even H.264 baseline. No codec setting helps. |
+| nothing advances | black | Video is dead in this WebView entirely. |
+
+It also runs the same file through MSE from a fragmented MP4, because YouTube
+plays exclusively through MSE. Progressive video working while MSE fails would
+by itself explain a black picture on YouTube and a working local file.
+
 ### If none of the policies help
 
 Worth knowing that this is a known, unsolved problem for WebView-based YouTube
@@ -198,11 +221,51 @@ symptom on the same hardware, where a tester reported that changing the user
 agent, comparing codecs and switching layer types all failed to fix it, and
 concluded Amazon's WebView fork is at fault.
 
-If `h264-only` with both layer types still gives a black picture, the honest
-conclusion is that this device's WebView cannot render YouTube's player, and a
-native client such as [SmartTube](https://github.com/yuliskov/SmartTube) is the
-answer. The other direction, replacing the system WebView with a bundled
-GeckoView, is a large change and unproven for Leanback.
+## Why the official app plays video and this does not
+
+Nothing that plays video well on a Fire TV renders it through a WebView. The
+official YouTube app, Netflix, Prime Video and
+[SmartTube](https://deepwiki.com/yuliskov/SmartTube) all do the same thing:
+decode with **MediaCodec** and present into a **SurfaceView**, a surface the
+system compositor scans out directly. SmartTube specifically is MediaServiceCore
+plus ExoPlayer plus the InnerTube API, with no web engine anywhere.
+
+A WebView has to do something much more awkward. It either composites video into
+the page's texture layer, or it hole-punches: it cuts a transparent hole in the
+page and puts a video surface behind it. Hole-punching is what breaks here.
+Forcing `LAYER_TYPE_HARDWARE` renders the whole WebView into an *offscreen*
+texture, and a surface behind an offscreen layer has nothing to show through to.
+Audio plays, the page and its controls draw normally, and the video area stays
+black. That is this app's exact symptom, and it is why `LAYER_TYPE_NONE` is now
+the default: it is the only one of the three that leaves the normal overlay path
+alone.
+
+### The four ways forward, honestly
+
+1. **Fix the compositing.** Layer type `none`, which had never actually been
+   tried: the old toggle only ever chose between `hardware` and `software`, and
+   both break video for different reasons. Cheap, and matches the symptom
+   exactly. Try this first.
+2. **Hybrid: Leanback UI, native player.** Keep the web UI, play video with
+   ExoPlayer underneath. Much harder than it sounds, because Leanback does not
+   hand you a stream URL: it feeds segments into MSE from JavaScript. Bridging
+   that to a native player means intercepting MSE buffers, and the player UI
+   then has to stay in sync with a surface it does not control.
+3. **Go fully native.** InnerTube plus ExoPlayer, no WebView. This is the
+   architecture that demonstrably works, and it makes ad blocking trivial
+   because ad streams are simply never requested. It is also a rewrite, and it
+   is precisely what SmartTube already is. Writing a second SmartTube is a
+   poor use of an evening unless owning the code is the point.
+4. **Bundle GeckoView.** Replace Amazon's WebView with Mozilla's engine, which
+   is what a commenter on the NoTubeTV issue suggested. It sidesteps the broken
+   engine and supports API 21+, but it adds tens of megabytes and nobody has
+   shown Leanback working under it.
+
+The self-test is what picks between these. If it reports decoded pixels while
+the screen stays black, this is case 1 and worth pursuing. If it cannot decode a
+local H.264 file at all, the WebView is a dead end on this device and only 3 or
+4 are real, at which point [SmartTube](https://github.com/yuliskov/SmartTube) is
+the sane answer and this project has been a good way to learn exactly why.
 
 ## Ad blocking
 

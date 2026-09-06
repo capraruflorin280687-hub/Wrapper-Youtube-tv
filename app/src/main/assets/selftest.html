@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YourTOBA video self-test</title>
+<style>
+  html,body{margin:0;background:#0b0b0d;color:#eee;overflow-x:hidden;
+    font:15px/1.4 system-ui,Roboto,Arial,sans-serif}
+  #r div,#verdict{overflow-wrap:anywhere}
+  .wrap{display:flex;flex-wrap:wrap;gap:20px;padding:20px;box-sizing:border-box}
+  .left{flex:1 1 300px;min-width:0;max-width:46%}
+  .right{flex:1 1 300px;min-width:0}
+  video{width:100%;height:auto;aspect-ratio:16/9;background:#222;border:2px solid #444}
+  h1{font-size:20px;margin:0 0 10px}
+  #r div{margin:7px 0}
+  .p{color:#6ee36e}.f{color:#ff6b6b}.w{color:#ffd166}.n{color:#8ab4ff}
+  #verdict{margin-top:14px;padding:12px;border-radius:8px;background:#1a1a20;
+    font-size:16px;line-height:1.45}
+  canvas{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="left">
+    <video id="v" src="selftest.mp4" autoplay muted playsinline></video>
+    <p style="font-size:18px;color:#aaa">
+      A colour test pattern should be moving in the box above.
+    </p>
+  </div>
+  <div class="right">
+    <h1>YourTOBA video self-test</h1>
+    <div id="r"></div>
+    <div id="verdict">running...</div>
+  </div>
+</div>
+<canvas id="c" width="160" height="90"></canvas>
+<script>
+var v = document.getElementById('v'), out = document.getElementById('r')
+var results = {}
+function say(k, state, text) {
+  results[k] = state
+  var d = document.createElement('div')
+  d.className = state
+  d.textContent = (state === 'p' ? 'PASS  ' : state === 'f' ? 'FAIL  ' : state === 'w' ? 'WARN  ' : '      ') + text
+  out.appendChild(d)
+}
+
+// Does the decoder actually produce visible pixels? drawImage reads the decoded
+// frame, which is independent of whether the compositor puts it on screen. That
+// distinction is the whole point of this page.
+function samplePixels() {
+  try {
+    var c = document.getElementById('c'), g = c.getContext('2d')
+    g.drawImage(v, 0, 0, c.width, c.height)
+    var d = g.getImageData(0, 0, c.width, c.height).data
+    var lit = 0, sum = 0
+    for (var i = 0; i < d.length; i += 4) {
+      var lum = d[i] + d[i + 1] + d[i + 2]
+      sum += lum
+      if (lum > 60) lit++
+    }
+    return { ok: true, lit: lit, pct: Math.round(lit / (d.length / 4) * 100), avg: Math.round(sum / (d.length / 4) / 3) }
+  } catch (e) {
+    return { ok: false, err: String(e).slice(0, 80) }
+  }
+}
+
+function mseTest(cb) {
+  if (!window.MediaSource) return cb('f', 'MediaSource missing entirely')
+  var mime = 'video/mp4; codecs="avc1.42C01F, mp4a.40.2"'
+  if (!MediaSource.isTypeSupported(mime)) return cb('f', 'MSE says H.264 unsupported: ' + mime)
+  // MSE needs a FRAGMENTED mp4 (moof boxes). A plain mp4 will always fail
+  // here, which would make this test meaningless rather than informative.
+  var ms = new MediaSource(), v2 = document.createElement('video')
+  v2.muted = true
+  v2.src = URL.createObjectURL(ms)
+  var done = false
+  var finish = function (s, t) { if (!done) { done = true; cb(s, t) } }
+  setTimeout(function () { finish('f', 'MSE timed out (no playable data after 12s)') }, 12000)
+  ms.addEventListener('sourceopen', function () {
+    var sb
+    try { sb = ms.addSourceBuffer(mime) } catch (e) { return finish('f', 'addSourceBuffer threw: ' + e) }
+    var x = new XMLHttpRequest()
+    x.open('GET', 'selftest-frag.mp4'); x.responseType = 'arraybuffer'
+    x.onload = function () {
+      try { sb.appendBuffer(new Uint8Array(x.response)) } catch (e) { return finish('f', 'appendBuffer threw: ' + e) }
+    }
+    x.onerror = function () { finish('f', 'could not fetch the test file') }
+    x.send()
+    sb.addEventListener('updateend', function () {
+      try { if (ms.readyState === 'open') ms.endOfStream() } catch (e) {}
+      v2.play().then(function () {
+        setTimeout(function () {
+          finish(v2.currentTime > 0 ? 'p' : 'f',
+            'MSE playback ' + (v2.currentTime > 0 ? 'advanced to ' + v2.currentTime.toFixed(1) + 's' : 'never advanced'))
+        }, 2500)
+      }, function (e) { finish('f', 'MSE play() rejected: ' + e) })
+    })
+  })
+}
+
+var started = Date.now()
+v.play().catch(function (e) { say('play', 'w', 'play() rejected: ' + e) })
+
+setTimeout(function () {
+  say('codec', v.canPlayType('video/mp4; codecs="avc1.42C01F"') ? 'p' : 'f',
+      'canPlayType H.264 baseline: "' + v.canPlayType('video/mp4; codecs="avc1.42C01F"') + '"')
+  say('ready', v.readyState >= 2 ? 'p' : 'f', 'readyState = ' + v.readyState + ' (need >= 2)')
+  say('adv', v.currentTime > 0 ? 'p' : 'f',
+      'playback position = ' + v.currentTime.toFixed(2) + 's')
+  say('dims', (v.videoWidth > 0) ? 'p' : 'f',
+      'decoded frame size = ' + v.videoWidth + 'x' + v.videoHeight)
+
+  var s = samplePixels()
+  if (!s.ok) {
+    say('px', 'w', 'canvas sample blocked: ' + s.err)
+  } else {
+    say('px', s.lit > 0 ? 'p' : 'f',
+        'decoded pixels: ' + s.pct + '% lit, average brightness ' + s.avg + '/255')
+  }
+
+  var q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null
+  if (q) say('frames', q.totalVideoFrames > 0 ? 'p' : 'w',
+      'frames: ' + q.totalVideoFrames + ' total, ' + q.droppedVideoFrames + ' dropped')
+
+  mseTest(function (state, text) {
+    say('mse', state, text)
+
+    var decodes = results.dims === 'p' && results.px === 'p'
+    var mseOk = results.mse === 'p'
+    var el = document.getElementById('verdict')
+    if (decodes) {
+      el.innerHTML = '<b class="n">The decoder works.</b><br>' +
+        'Frames are decoding to real pixels' +
+        (mseOk ? ', and MSE works too' : ', but <b class="f">MSE playback failed</b>') +
+        '.<br><br>If the box on the left still looks BLACK on your TV, the ' +
+        'problem is compositing, not decoding: the WebView decodes video it ' +
+        'never puts on screen. Try Up/Down to change layer type.' +
+        (mseOk ? '' : '<br><br>YouTube plays exclusively through MSE, so an MSE ' +
+          'failure alone is enough to explain a black picture on YouTube while ' +
+          'this local file plays fine.')
+    } else if (results.adv === 'p') {
+      el.innerHTML = '<b class="f">Audio advances but no frames decode.</b><br>' +
+        'This WebView cannot decode even H.264 baseline. No codec setting will ' +
+        'help, and a native player is the only route.'
+    } else {
+      el.innerHTML = '<b class="f">Nothing plays at all.</b><br>' +
+        'Even a local H.264 file will not start in this WebView.'
+    }
+    el.innerHTML += '<br><br style="font-size:16px">Press Back to return to YouTube.'
+    if (window.YourTOBA && window.YourTOBA.selfTestResult) {
+      try { window.YourTOBA.selfTestResult(JSON.stringify(results) + ' | px=' + JSON.stringify(s)) } catch (e) {}
+    }
+  })
+}, 4000)
+</script>
+</body>
+</html>
