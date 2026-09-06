@@ -23,7 +23,24 @@ android {
             storePassword = "yourtoba"
             keyAlias = "yourtoba"
             keyPassword = "yourtoba"
+            // v2 alone is enough for Android 9+, and AGP omits v1 by default at
+            // this minSdk. But the Fire TV sideload path is rarely the platform
+            // installer: it is Downloader, or a file manager, and several of
+            // those parse the APK themselves and reject anything with no v1 JAR
+            // signature block as "bad" or as a split. Signing all three costs
+            // nothing and makes the APK acceptable to every installer.
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
         }
+    }
+
+    // Strips the Play-store dependency metadata blob AGP otherwise embeds in the
+    // APK signing block. Useless for a sideloaded personal build, and an unknown
+    // signing-block entry is another thing a third-party installer can trip on.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     buildTypes {

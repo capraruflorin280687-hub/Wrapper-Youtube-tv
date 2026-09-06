@@ -50,6 +50,36 @@ Then, from a machine on the same network:
 Accept the "Allow USB debugging?" prompt that appears on the TV the first time,
 then run it again. YourTOBA lands on the Fire TV home row like any other app.
 
+### Without ADB
+
+If ADB is not an option, serve the APK to the TV over your LAN:
+
+```bash
+./serve.sh
+```
+
+It prints a URL. On the Fire TV, open the **Downloader** app, type that URL, and
+install what it fetches.
+
+### If the installer says "split or bad apk"
+
+That message comes from a third-party installer, not from Android itself, and it
+usually means one of three things.
+
+1. **The APK lost its v1 signature.** Builds before 2026-09-06 were signed with
+   the v2 scheme only, which Android 9+ accepts but several Fire TV sideload
+   apps reject as malformed. Current builds are signed v1, v2 and v3. Check with
+   `apksigner verify --verbose --min-sdk-version 21 dist/YourTOBA-0.1.0.apk`,
+   which should report v1, v2 and v3 all true.
+2. **The file was truncated or rewritten in transit.** Anything that proxies or
+   re-encodes a download can do this. Compare the checksum on the device against
+   `sha256sum dist/YourTOBA-0.1.0.apk`; `./serve.sh` prints it for you.
+3. **The installer genuinely cannot handle a plain APK.** Some file managers only
+   understand `.apks` bundles. Use Downloader, or `./install.sh`.
+
+`./install.sh <ip>` avoids all of this, because `adb install` hands the package
+straight to the platform installer and never goes near a third-party one.
+
 ## Using it
 
 The remote works the way Leanback expects, because the d-pad already arrives as
@@ -149,6 +179,7 @@ tests/strip.test.mjs               ad-stripping test suite
 docs/SCOPE.md                      why the port is shaped this way
 docs/reference-preload.js          the original macOS preload, for diffing
 install.sh                         build + sideload over network ADB
+serve.sh                           serve the APK to the TV's Downloader app
 emulator.sh                        run it on an Android TV emulator instead
 docs/evidence/                     screenshots from the verification run
 ```
