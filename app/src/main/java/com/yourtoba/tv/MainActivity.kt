@@ -47,9 +47,12 @@ class MainActivity : AppCompatActivity() {
         // actual TV, and ad blocking does not depend on it. See docs/SCOPE.md.
         private const val SPOOF_4K = false
 
+        // Origin allowlist for the document-start script. The wildcard covers
+        // whichever youtube.com subdomain Leanback lands on or redirects to;
+        // without it a redirect to an unlisted host would silently run the page
+        // with no ad stripping at all.
         private val ALLOWED_ORIGINS = setOf(
-            "https://www.youtube.com",
-            "https://m.youtube.com",
+            "https://*.youtube.com",
             "https://youtube.com"
         )
 
@@ -63,6 +66,9 @@ class MainActivity : AppCompatActivity() {
 
     private var blockedCount = 0
 
+    /** False if the preferred path was unavailable or refused at install time. */
+    private var documentStartInstalled = false
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,9 +80,12 @@ class MainActivity : AppCompatActivity() {
         webView.setBackgroundColor(Color.BLACK)
         setContentView(webView)
 
-        // Lets `chrome://inspect` attach over adb on debug builds, which is the
-        // only practical way to see what Leanback is doing on the TV.
-        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+        // On unconditionally, not just in debug builds. This is a personal
+        // sideload app on a device where ADB is already enabled (you cannot
+        // install it otherwise), so this exposes nothing new, and `chrome://
+        // inspect` is the only practical way to see what Leanback is actually
+        // doing on a TV across the room.
+        WebView.setWebContentsDebuggingEnabled(true)
 
         configureSettings(webView.settings)
         configureCookies(webView)
@@ -100,15 +109,6 @@ class MainActivity : AppCompatActivity() {
                     view.settings.userAgentString = TV_UA
                     Log.i(TAG, "Handshake done, switched to ongoing Cobalt UA")
                 }
-                if (!documentStartSupported()) {
-                    // Fallback path: inject as early as we are allowed to. This
-                    // races YouTube's own scripts and may miss the first-paint
-                    // ytInitialData, but it still lands before the innertube
-                    // player calls that carry the video ads, which is the part
-                    // that matters. Logged loudly so the real path is obvious in
-                    // logcat when testing on the device.
-                    view.evaluateJavascript(adStripperSource(), null)
-                }
             }
 
             override fun shouldInterceptRequest(
@@ -116,6 +116,22 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest
             ): WebResourceResponse? {
                 val uri: Uri = request.url
+
+                // Old-WebView fallback: rewrite the top-level document so the
+                // stripper is the first script in it. See DocumentRewriter for
+                // why onPageStarted injection is not good enough.
+                if (!documentStartSupported() &&
+                    request.isForMainFrame &&
+                    request.method.equals("GET", ignoreCase = true) &&
+                    isYouTube(uri)
+                ) {
+                    DocumentRewriter.rewriteMainDocument(
+                        request,
+                        adStripperSource(),
+                        currentUserAgent()
+                    )?.let { return it }
+                }
+
                 if (AdBlockList.shouldBlock(uri)) {
                     blockedCount++
                     if (blockedCount <= 40 || blockedCount % 50 == 0) {
@@ -167,8 +183,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun isYouTube(uri: Uri): Boolean {
+        val host = uri.host?.lowercase() ?: return false
+        return host == "youtube.com" || host.endsWith(".youtube.com")
+    }
+
+    /** The UA the WebView would itself send for the current phase. */
+    private fun currentUserAgent(): String =
+        if (handshakeUaActive) TV_CLIENT_UA else TV_UA
+
     private fun documentStartSupported(): Boolean =
-        WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+        documentStartInstalled
 
     /**
      * Layer 2, and the one that actually kills video ads.
@@ -180,14 +205,21 @@ class MainActivity : AppCompatActivity() {
      */
     private fun installAdStripper() {
         val source = adStripperSource()
-        if (documentStartSupported()) {
-            WebViewCompat.addDocumentStartJavaScript(webView, source, ALLOWED_ORIGINS)
-            Log.i(TAG, "Ad stripper installed at document start (preferred path)")
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            try {
+                WebViewCompat.addDocumentStartJavaScript(webView, source, ALLOWED_ORIGINS)
+                Log.i(TAG, "Ad stripper installed at document start (preferred path)")
+                documentStartInstalled = true
+            } catch (e: Exception) {
+                // A rejected origin rule would otherwise crash onCreate. Log it
+                // and let the document-rewrite fallback carry the load instead.
+                Log.w(TAG, "addDocumentStartJavaScript rejected (${e.message}); using rewrite fallback")
+            }
         } else {
             Log.w(
                 TAG,
                 "DOCUMENT_START_SCRIPT unsupported on this WebView " +
-                    "(${currentWebViewVersion()}); falling back to onPageStarted injection"
+                    "(${currentWebViewVersion()}); using document-rewrite fallback"
             )
         }
     }

@@ -48,10 +48,6 @@ android {
         jvmTarget = "17"
     }
 
-    buildFeatures {
-        buildConfig = true
-    }
-
     androidResources {
         // yourtoba.js must reach the device byte-for-byte.
         noCompress += "js"

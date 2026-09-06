@@ -144,19 +144,58 @@ would mean uninstalling and reinstalling on the TV to change signer.
 app/src/main/assets/yourtoba.js    the ad stripping (the actual asset)
 app/src/main/java/.../MainActivity.kt   WebView host, UA handshake, key handling
 app/src/main/java/.../AdBlockList.kt    network-level block rules
+app/src/main/java/.../DocumentRewriter.kt  old-WebView injection fallback
 tests/strip.test.mjs               ad-stripping test suite
 docs/SCOPE.md                      why the port is shaped this way
 docs/reference-preload.js          the original macOS preload, for diffing
 install.sh                         build + sideload over network ADB
+emulator.sh                        run it on an Android TV emulator instead
+docs/evidence/                     screenshots from the verification run
 ```
 
-## Not yet verified on hardware
+## What has been verified, and how
 
-Everything here is built and tested on a desktop. Three things need a real Fire
-TV to confirm, in this order: that Leanback loads and plays at all, that video
-ads genuinely do not appear, and that playback is smooth and at what resolution.
-`./install.sh <ip> logs` will show which injection path was taken and what got
-blocked.
+Verified on an **Android TV emulator running API 28**, the same API level as
+Fire OS 7, against live YouTube servers. Reproduce with `./emulator.sh logs`.
+
+![Leanback running in YourTOBA](docs/evidence/leanback-on-android-tv-api28.png)
+
+- **Leanback loads.** YouTube serves the real TV interface to the Cobalt user
+  agent, including its Cobalt-specific CSP directives and the `kabuki` Leanback
+  bundle. The screenshot above is the app at 1920x1080.
+- **The stripper runs in the page.** Live in-page state on `youtube.com/tv`:
+  `__yourtobaInstalled: true`, `JSON.parse` patched, `fetch` patched, key bridge
+  present.
+- **Ads are actually stripped from live traffic.** A real
+  `/youtubei/v1/player` call in the running app returns
+  `"adBreakHeartbeatParams":"Q0FBJTNE"` on the wire, and the page receives `[]`.
+  Raw bytes compared against the parsed object in the same session.
+- **Network blocking fires.** `static.doubleclick.net/instream/ad_status.js`
+  refused on load.
+- **The old-WebView fallback works**, and finding that took two fixes. That
+  emulator image ships WebView 66, far too old for `DOCUMENT_START_SCRIPT`, so
+  it exercised the fallback and exposed both bugs described below.
+
+Two real bugs the emulator caught, both fixed:
+
+1. Injecting at `onPageStarted` runs against the document being navigated away
+   from. It reported itself active on `about:blank` while the actual YouTube
+   page got nothing. Replaced with the document rewrite in
+   `DocumentRewriter.kt`, which inlines the script into the HTML itself.
+2. The inlined script was then refused by YouTube's CSP, which is
+   `script-src 'nonce-...' 'unsafe-eval'`. The rewriter now reuses the page's
+   own nonce, falling back to whitelisting the script by SHA-256 hash. The
+   policy stays exactly as strict as YouTube set it.
+
+### Still needs the real TV
+
+- **Playback performance.** The emulator renders through swiftshader, so it says
+  nothing about whether a Fire TV Stick decodes smoothly, or at what resolution.
+  This is the main open question.
+- **Which injection path your stick takes.** If Amazon's WebView is recent
+  enough you get the document-start path, which is cleaner than the fallback.
+  The first log line tells you which.
+- **The remote.** D-pad and Back are wired but untested against real hardware.
 
 There is also an optional 4K viewport spoof, `SPOOF_4K` in `MainActivity.kt`,
 off by default. Leanback picks its layout from the viewport, and forcing
