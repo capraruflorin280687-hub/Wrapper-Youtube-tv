@@ -64,14 +64,35 @@ class MainActivity : AppCompatActivity() {
         private const val EMPTY_RESPONSE_MIME = "text/plain"
 
         private const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
+        private const val WRAP = FrameLayout.LayoutParams.WRAP_CONTENT
 
         /** How long Leanback gets to put something on screen before we explain. */
         private const val BOOT_CHECK_DELAY_MS = 15_000L
+
+        /**
+         * Which video codecs the page is allowed to claim it can play.
+         *
+         * A first-generation Fire TV Stick 4K has no AV1 hardware decoder, but
+         * Chromium's software AV1 decoder makes the WebView answer "supported"
+         * anyway, so YouTube serves AV1 and the stick chokes: audio with a black
+         * screen, or heavy stutter. "no-av1" leaves VP9 and H.264, both of which
+         * that device decodes in hardware.
+         *
+         *   "no-av1"    block AV1 only (default)
+         *   "h264-only" also block VP9, if VP9 turns out to be unreliable too
+         *   "all"       no filtering
+         */
+        private const val CODEC_POLICY = "no-av1"
+
+        private const val STATS_POLL_MS = 1000L
     }
 
     private lateinit var webView: WebView
     private lateinit var diagnostic: TextView
+    private lateinit var stats: TextView
+    private var statsVisible = false
     private val handler = Handler(Looper.getMainLooper())
+    private val statsHandler = Handler(Looper.getMainLooper())
 
     /** True until the first navigation commits, so the Cobalt handshake UA is used once. */
     private var handshakeUaActive = true
@@ -105,9 +126,23 @@ class MainActivity : AppCompatActivity() {
             visibility = View.GONE
         }
 
+        // Toggled with the remote's Menu button. The person debugging playback
+        // is on a sofa, not at a terminal reading logcat.
+        stats = TextView(this).apply {
+            setBackgroundColor(0xB0000000.toInt())
+            setTextColor(0xFF9DFF9D.toInt())
+            textSize = 13f
+            setPadding(28, 24, 28, 24)
+            visibility = View.GONE
+        }
+
         setContentView(FrameLayout(this).apply {
             addView(webView, FrameLayout.LayoutParams(MATCH, MATCH))
             addView(diagnostic, FrameLayout.LayoutParams(MATCH, MATCH))
+            addView(stats, FrameLayout.LayoutParams(WRAP, WRAP).apply {
+                gravity = Gravity.TOP or Gravity.START
+                setMargins(36, 36, 36, 36)
+            })
         })
 
         // On unconditionally, not just in debug builds. This is a personal
@@ -284,7 +319,8 @@ class MainActivity : AppCompatActivity() {
     private fun adStripperSource(): String {
         cachedSource?.let { return it }
         val js = assets.open("yourtoba.js").bufferedReader().use { it.readText() }
-        val prelude = "window.__yourtobaSpoof4K = $SPOOF_4K;\n"
+        val prelude = "window.__yourtobaSpoof4K = $SPOOF_4K;\n" +
+            "window.__yourtobaCodecPolicy = '$CODEC_POLICY';\n"
         return (prelude + js).also { cachedSource = it }
     }
 
@@ -303,7 +339,45 @@ class MainActivity : AppCompatActivity() {
             event.startTracking()
             return true
         }
+        if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_INFO) {
+            toggleStats()
+            return true
+        }
         return super.onKeyDown(keyCode, event)
+    }
+
+    private fun toggleStats() {
+        statsVisible = !statsVisible
+        stats.visibility = if (statsVisible) View.VISIBLE else View.GONE
+        statsHandler.removeCallbacksAndMessages(null)
+        if (statsVisible) pollStats()
+        Log.i(TAG, "Stats overlay ${if (statsVisible) "on" else "off"}")
+    }
+
+    private fun pollStats() {
+        if (!statsVisible) return
+        webView.evaluateJavascript("window.__yourtobaStats && window.__yourtobaStats()") { raw ->
+            stats.text = formatStats(raw)
+            Log.i(TAG, "stats: ${raw?.take(300)}")
+        }
+        statsHandler.postDelayed({ pollStats() }, STATS_POLL_MS)
+    }
+
+    /** The JS returns a JSON string, itself delivered as a quoted JS string. */
+    private fun formatStats(raw: String?): String {
+        if (raw.isNullOrBlank() || raw == "null") return "no stats yet"
+        val json = try {
+            org.json.JSONObject(org.json.JSONTokener(raw).nextValue().toString())
+        } catch (e: Exception) {
+            return "stats unavailable"
+        }
+        return buildString {
+            append("YourTOBA playback\n")
+            for (key in json.keys()) {
+                append(key).append(": ").append(json.optString(key)).append('\n')
+            }
+            append("(Menu to hide)")
+        }
     }
 
     override fun onKeyLongPress(keyCode: Int, event: KeyEvent): Boolean {
@@ -398,6 +472,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        statsHandler.removeCallbacksAndMessages(null)
         webView.destroy()
         super.onDestroy()
     }

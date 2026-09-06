@@ -217,6 +217,126 @@
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Codec policy.
+  //
+  // Chromium ships a software AV1 decoder, so a WebView answers "yes, I can
+  // play AV1" even on hardware that has no AV1 decoder at all. YouTube believes
+  // it and serves AV1, and a first-generation Fire TV Stick 4K then tries to
+  // decode it on a quad Cortex-A53. The result is exactly what was reported:
+  // audio with a black screen when the decoder gives up entirely, or heavy
+  // stutter when it half keeps up, while the occasional lighter video plays.
+  //
+  // That stick hardware-decodes H.264, HEVC and VP9, but not AV1. So the fix is
+  // to stop claiming AV1 support. Leanback asks three different ways and all
+  // three have to agree, or it will still pick a format we cannot play.
+  //
+  // Policy comes from the native side:
+  //   "no-av1"    block AV1 only, leaving VP9 and H.264 (default)
+  //   "h264-only" also block VP9, for a device whose VP9 is unreliable
+  //   "all"       no filtering, i.e. the old behaviour
+  var CODEC_POLICY = window.__yourtobaCodecPolicy || 'no-av1'
+  var BLOCKED_CODECS =
+    CODEC_POLICY === 'h264-only' ? ['av01', 'vp9', 'vp09'] :
+    CODEC_POLICY === 'all' ? [] : ['av01']
+
+  function isBlockedType(type) {
+    if (!type || !BLOCKED_CODECS.length) return false
+    var t = String(type).toLowerCase()
+    for (var i = 0; i < BLOCKED_CODECS.length; i++) {
+      if (t.indexOf(BLOCKED_CODECS[i]) !== -1) return true
+    }
+    return false
+  }
+
+  if (BLOCKED_CODECS.length) {
+    // 1. MediaSource.isTypeSupported, which is what MSE players check first.
+    if (window.MediaSource && MediaSource.isTypeSupported) {
+      var originalIsTypeSupported = MediaSource.isTypeSupported.bind(MediaSource)
+      MediaSource.isTypeSupported = function (type) {
+        if (isBlockedType(type)) return false
+        return originalIsTypeSupported(type)
+      }
+    }
+
+    // 2. canPlayType, the older query. "" means not supported.
+    if (window.HTMLMediaElement && HTMLMediaElement.prototype.canPlayType) {
+      var originalCanPlayType = HTMLMediaElement.prototype.canPlayType
+      HTMLMediaElement.prototype.canPlayType = function (type) {
+        if (isBlockedType(type)) return ''
+        return originalCanPlayType.call(this, type)
+      }
+    }
+
+    // 3. Media Capabilities, which is what a modern Leanback prefers because it
+    //    also reports "smooth" and "powerEfficient".
+    //    Guarded on `typeof` rather than assuming the global exists: every
+    //    patch in this file shares one script, so an unguarded reference to a
+    //    missing global would throw and take the ad blocking down with it.
+    var nav = typeof navigator !== 'undefined' ? navigator : null
+    if (nav && nav.mediaCapabilities && nav.mediaCapabilities.decodingInfo) {
+      var originalDecodingInfo =
+        nav.mediaCapabilities.decodingInfo.bind(nav.mediaCapabilities)
+      nav.mediaCapabilities.decodingInfo = function (config) {
+        var contentType = config && config.video && config.video.contentType
+        if (isBlockedType(contentType)) {
+          return Promise.resolve({
+            supported: false,
+            smooth: false,
+            powerEfficient: false
+          })
+        }
+        return originalDecodingInfo(config)
+      }
+    }
+  }
+
+  // Records what actually ends up playing, so the stats overlay can report the
+  // real codec rather than what we hoped for.
+  window.__yourtobaCodecs = []
+  if (window.MediaSource && MediaSource.prototype.addSourceBuffer) {
+    var originalAddSourceBuffer = MediaSource.prototype.addSourceBuffer
+    MediaSource.prototype.addSourceBuffer = function (type) {
+      try {
+        if (window.__yourtobaCodecs.indexOf(type) === -1) {
+          window.__yourtobaCodecs.push(type)
+        }
+      } catch (e) {}
+      return originalAddSourceBuffer.call(this, type)
+    }
+  }
+
+  /** Playback stats for the on-screen overlay and for logcat. */
+  window.__yourtobaStats = function () {
+    try {
+      var v = document.querySelector('video')
+      var out = {
+        policy: CODEC_POLICY,
+        blocked: BLOCKED_CODECS.join(',') || 'none',
+        codecs: (window.__yourtobaCodecs || [])
+          .map(function (c) { return c.replace('video/', '').replace('audio/', '') })
+          .join('  ')
+      }
+      if (!v) {
+        out.video = 'no video element'
+        return JSON.stringify(out)
+      }
+      out.size = v.videoWidth + 'x' + v.videoHeight
+      out.state = v.paused ? 'paused' : 'playing'
+      out.time = Math.round(v.currentTime) + 's'
+      if (v.getVideoPlaybackQuality) {
+        var q = v.getVideoPlaybackQuality()
+        var total = q.totalVideoFrames || 0
+        var dropped = q.droppedVideoFrames || 0
+        out.frames = dropped + ' dropped / ' + total
+        out.dropPct = total ? Math.round((dropped / total) * 1000) / 10 + '%' : '0%'
+      }
+      return JSON.stringify(out)
+    } catch (e) {
+      return JSON.stringify({ error: String(e) })
+    }
+  }
+
   // Called from the native side when the Fire TV remote's Back button is
   // pressed. Leanback reads `.keyCode` off any Event object, not just a real
   // KeyboardEvent (whose keyCode is read-only on a constructed instance), so a

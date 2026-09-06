@@ -133,11 +133,60 @@ real key events.
 | D-pad, Select | Navigate, as normal |
 | Back (press) | Back inside Leanback |
 | Back (hold) | Exit the app |
+| Menu (or Info) | Toggle the playback stats overlay |
 | Home | Leaves the app, as always |
 
 **Signing in** uses the `google.com/device` code flow, the one Google
 explicitly supports for TV and limited-input apps. It just works, and it is the
 reason none of the macOS app's browser-cookie-import machinery came along.
+
+## Playback and codecs
+
+Symptoms on a first-generation Fire TV Stick 4K: most videos played with sound
+but a black screen, some started black then stuttered badly, a few were fine.
+
+That is what a missing hardware decoder looks like. Chromium ships a **software**
+AV1 decoder, so a WebView answers "yes, I support AV1" regardless of the
+hardware underneath. YouTube believes it and serves AV1. That stick decodes
+H.264, HEVC and VP9 in hardware but has no AV1 decoder at all, so it falls back
+to decoding AV1 on a quad Cortex-A53: it drops every frame and shows black while
+audio keeps going, or half keeps up and stutters.
+
+So YourTOBA stops claiming AV1 support. Leanback asks three separate ways and
+all three have to agree or it will still choose a format the device cannot play:
+
+- `MediaSource.isTypeSupported`
+- `HTMLMediaElement.prototype.canPlayType`
+- `navigator.mediaCapabilities.decodingInfo`
+
+Verified in a real WebView: AV1 is refused by all three, while VP9, H.264 and
+audio pass through untouched.
+
+`CODEC_POLICY` in `MainActivity.kt` controls it:
+
+| Value | Effect |
+|---|---|
+| `no-av1` | Block AV1, keep VP9 and H.264. **Default.** |
+| `h264-only` | Also block VP9, forcing H.264. Try this if VP9 also misbehaves. |
+| `all` | No filtering. |
+
+### Seeing what is actually playing
+
+Press **Menu** (or Info) on the remote for a stats overlay: the active policy,
+the codecs the player actually asked for, video size, and dropped frames.
+
+![Stats overlay](docs/evidence/stats-overlay.png)
+
+If a video still misbehaves, that overlay is the thing to read. A high dropped
+frame count means the decoder is still struggling, and `h264-only` is the next
+thing to try. The same lines also go to logcat, so `./install.sh <ip> logs`
+captures them.
+
+One caveat on this fix: the symptoms and the hardware both point squarely at
+AV1, but it could not be confirmed directly, because YouTube will not hand a TV
+client's format list to an unauthenticated request and the emulators available
+here run WebViews that predate AV1 entirely. The overlay exists so the answer
+comes from the actual device rather than from inference.
 
 ## Ad blocking
 

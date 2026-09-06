@@ -51,6 +51,7 @@ const sandbox = {
   Event: EventStub,
   document: documentStub,
   location: { href: 'https://www.youtube.com/tv' },
+  navigator: { mediaCapabilities: { decodingInfo: async () => ({ supported: true }) } },
   fetch: async () => new Response(JSON.stringify(FETCH_BODY), {
     status: 200,
     statusText: 'OK',
