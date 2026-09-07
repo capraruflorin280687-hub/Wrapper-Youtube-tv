@@ -25,6 +25,9 @@ object Flavor {
     /** Back walks the site's history, the way every Android browser behaves. */
     const val BACK_SENDS_ESCAPE = false
 
+    /** Drag down at the top of the page to reload, as any mobile app would. */
+    const val PULL_TO_REFRESH = true
+
     /**
      * No filtering. A phone from any recent year decodes AV1 and VP9 fine, and
      * blocking them would only force worse quality at higher bitrate.

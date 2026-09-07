@@ -27,6 +27,9 @@ object Flavor {
     /** Back sends Escape into Leanback rather than walking history. */
     const val BACK_SENDS_ESCAPE = true
 
+    /** No touchscreen on a remote, so there is nothing to pull. */
+    const val PULL_TO_REFRESH = false
+
     /**
      * H.264 only by default. A first-generation Fire TV Stick 4K has no AV1
      * decoder and older Fire TV sticks do not hardware-decode VP9 either.

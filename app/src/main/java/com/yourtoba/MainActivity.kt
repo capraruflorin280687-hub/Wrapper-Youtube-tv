@@ -23,6 +23,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.ByteArrayInputStream
@@ -109,6 +110,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var diagnostic: TextView
     private lateinit var stats: TextView
+    private var swipeRefresh: SwipeRefreshLayout? = null
     private var statsVisible = false
     private lateinit var prefs: android.content.SharedPreferences
     private var codecPolicy = "h264-only"
@@ -164,8 +166,30 @@ class MainActivity : AppCompatActivity() {
             visibility = View.GONE
         }
 
+        // Pull to refresh, phone only. It wraps the WebView so the gesture is
+        // handled before the page sees it, but only in the one place that is
+        // unambiguous: see canPullToRefresh below.
+        val content: View = if (Flavor.PULL_TO_REFRESH) {
+            SwipeRefreshLayout(this).apply {
+                addView(webView, FrameLayout.LayoutParams(MATCH, MATCH))
+                setColorSchemeColors(0xFFE2222A.toInt())
+                setProgressBackgroundColorSchemeColor(0xFF1A1A1E.toInt())
+                setOnRefreshListener {
+                    Log.i(TAG, "Pull to refresh")
+                    webView.reload()
+                }
+                // Without this the layout decides for itself whether the child
+                // can scroll up, and a WebView reports that badly enough that
+                // the gesture fires mid-page and eats ordinary scrolling.
+                setOnChildScrollUpCallback { _, _ -> !canPullToRefresh() }
+                swipeRefresh = this
+            }
+        } else {
+            webView
+        }
+
         setContentView(FrameLayout(this).apply {
-            addView(webView, FrameLayout.LayoutParams(MATCH, MATCH))
+            addView(content, FrameLayout.LayoutParams(MATCH, MATCH))
             addView(diagnostic, FrameLayout.LayoutParams(MATCH, MATCH))
             addView(stats, FrameLayout.LayoutParams(WRAP, WRAP).apply {
                 gravity = Gravity.TOP or Gravity.START
@@ -207,6 +231,9 @@ class MainActivity : AppCompatActivity() {
                     callback.onCustomViewHidden()
                     return
                 }
+                // A fullscreen player fills the screen; a stray downward drag
+                // there should scrub or dismiss, never reload the page.
+                swipeRefresh?.isEnabled = false
                 customView = view
                 (window.decorView as android.view.ViewGroup).addView(
                     view,
@@ -216,6 +243,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onHideCustomView() {
+                swipeRefresh?.isEnabled = Flavor.PULL_TO_REFRESH
                 customView?.let {
                     (window.decorView as android.view.ViewGroup).removeView(it)
                 }
@@ -250,6 +278,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPageFinished(view: WebView, url: String) {
+                swipeRefresh?.isRefreshing = false
                 if (!url.startsWith("http")) return
                 if (url.contains("yourtoba.local")) return
                 handler.removeCallbacksAndMessages(null)
@@ -298,6 +327,14 @@ class MainActivity : AppCompatActivity() {
                 return null
             }
 
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: android.webkit.WebResourceError
+            ) {
+                if (request.isForMainFrame) swipeRefresh?.isRefreshing = false
+            }
+
             override fun shouldOverrideUrlLoading(
                 view: WebView,
                 request: WebResourceRequest
@@ -312,6 +349,20 @@ class MainActivity : AppCompatActivity() {
         webView.settings.userAgentString =
             if (Flavor.TWO_PHASE_UA) Flavor.HANDSHAKE_UA else mobileUserAgent()
         webView.loadUrl(START_URL)
+    }
+
+    /**
+     * True only when a downward drag can mean nothing but "reload".
+     *
+     * Two things have to hold. The page must already be at the very top, or the
+     * gesture would steal ordinary scrolling. And we must not be in Shorts,
+     * where a vertical swipe is how you move between videos: hijacking that
+     * would break the feature rather than add one.
+     */
+    private fun canPullToRefresh(): Boolean {
+        if (webView.scrollY > 0) return false
+        val url = webView.url ?: return true
+        return !url.contains("/shorts", ignoreCase = true)
     }
 
     private fun applyLayerType() {

@@ -99,4 +99,7 @@ dependencies {
     // Supplies WebViewCompat.addDocumentStartJavaScript, the Android equivalent
     // of an Electron preload: guaranteed to run before any page script.
     implementation("androidx.webkit:webkit:1.12.1")
+    // Pull to refresh on the phone build. Unused by the TV build, which has no
+    // touchscreen, but it is a few kilobytes and keeps one dependency list.
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
 }

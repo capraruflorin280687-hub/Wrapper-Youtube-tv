@@ -143,6 +143,7 @@ real key events.
 | Back (press) | Back inside Leanback |
 | Back (hold) | Exit the app |
 | Menu (or Info) | Toggle the playback stats and settings overlay |
+| Drag down *(phone, at top of page)* | Reload |
 | Left / Right *(overlay open)* | Cycle the codec policy |
 | Up / Down *(overlay open)* | Cycle layer type: none / hardware / software |
 | Select *(overlay open)* | Run the video self-test |
@@ -159,7 +160,24 @@ TV app: touch, scrolling, Back walks history, no immersive mode, and the
 launcher entry is plain (no Leanback banner). Separate `applicationId`
 (`com.yourtoba.mobile`), so it can sit alongside the TV build.
 
-Two things it does differently, both deliberate:
+**Pull to refresh.** Drag down at the top of a page to reload. It is gated on
+two conditions so it can only ever mean "reload":
+
+- the page must already be scrolled to the very top, otherwise the gesture would
+  eat ordinary scrolling. `m.youtube.com` scrolls the document itself rather
+  than an inner element (checked, not assumed), so `webView.scrollY` is a
+  trustworthy signal here.
+- it is switched off in Shorts, where a vertical swipe is how you move between
+  videos. Hijacking that would remove a feature rather than add one.
+
+It is also disabled while a video is fullscreen, and the spinner is cleared on
+both success and error so a failed load cannot leave it turning forever.
+
+Verified on the emulator: fires at the top, stays silent mid-page while the page
+still scrolls normally, stays silent in Shorts, and the reload re-injects the ad
+stripper.
+
+Three other things it does differently, all deliberate:
 
 - **User agent.** Rather than a hardcoded string, it takes the WebView's own UA
   and strips the `; wv` token, which is the only thing marking it as an embedded
