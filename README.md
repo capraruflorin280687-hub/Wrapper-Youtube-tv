@@ -44,6 +44,12 @@ SponsorBlock.
 - For building: JDK 17 and the Android SDK. `env.sh` points at a userspace
   install of both, so nothing needs root.
 
+## Download
+
+Built APKs are attached to the [latest release](../../releases/latest) rather
+than committed, since a rebuilt APK is a fresh multi-megabyte blob and history
+would keep every one of them.
+
 ## Install
 
 On the Fire TV, enable Settings → My Fire TV → Developer Options → **ADB
@@ -393,9 +399,19 @@ pass-through of non-ad endpoints, the depth ceiling, and the Back-key bridge.
 ./gradlew assemblePhoneRelease   # app/build/outputs/apk/phone/release/app-phone-release.apk
 ```
 
-The APK is signed with `app/sideload.keystore`, which is committed on purpose.
-This is a personal sideload build, not a Play Store release, and losing the key
-would mean uninstalling and reinstalling on the TV to change signer.
+The first build needs a signing key, which is **not** in the repository:
+
+```bash
+./tools/make-keystore.sh     # once; the install scripts also call it for you
+```
+
+A signing key in a public repo would let anyone build a package Android accepts
+as an update to yours, so everyone generates their own. Keep the file once it
+exists: Android refuses to update an installed app whose signer changed, so a
+lost key means uninstalling and reinstalling, losing sign-in and data.
+
+Building without one still works, but produces `app-*-release-unsigned.apk`,
+which cannot be installed. The build says so.
 
 ## The Fire TV banner
 
@@ -419,6 +435,7 @@ app/src/main/java/.../DocumentRewriter.kt  old-WebView injection fallback
 tests/strip.test.mjs               ad-stripping test suite
 docs/SCOPE.md                      why the port is shaped this way
 docs/reference-preload.js          the original macOS preload, for diffing
+tools/make-keystore.sh             generates the local signing key
 install.sh                         build + sideload over network ADB
 serve.sh                           serve the APK to the TV's Downloader app
 emulator.sh                        run it on an Android TV emulator instead

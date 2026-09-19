@@ -1,11 +1,16 @@
 .gradle/
 build/
 local.properties
-*.apk
-*.keystore
-!app/sideload.keystore
-!debug.keystore
 .idea/
 *.iml
 .kotlin/
-!dist/*.apk
+
+# Built packages. These are published as GitHub Releases rather than committed:
+# a rebuilt APK is a fresh multi-megabyte blob every time, and history keeps
+# every one of them forever.
+*.apk
+dist/
+
+# The signing key is generated locally by tools/make-keystore.sh. Publishing a
+# signing key lets anyone build a package Android accepts as an update to yours.
+*.keystore

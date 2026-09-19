@@ -11,6 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./env.sh
+./tools/make-keystore.sh
 export ANDROID_AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.config/.android/avd}"
 
 PORT=5556

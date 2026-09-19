@@ -39,21 +39,28 @@ android {
         }
     }
 
+    // The signing key is generated locally by tools/make-keystore.sh and is not
+    // in the repository. A signing key in a public repo lets anyone build a
+    // package that Android accepts as an update to yours, and generating your
+    // own costs one command.
+    val sideloadKeystore = file("sideload.keystore")
+
     signingConfigs {
-        create("sideload") {
-            storeFile = file("sideload.keystore")
-            storePassword = "yourtoba"
-            keyAlias = "yourtoba"
-            keyPassword = "yourtoba"
-            // v2 alone is enough for Android 9+, and AGP omits v1 by default at
-            // this minSdk. But the Fire TV sideload path is rarely the platform
-            // installer: it is Downloader, or a file manager, and several of
-            // those parse the APK themselves and reject anything with no v1 JAR
-            // signature block as "bad" or as a split. Signing all three costs
-            // nothing and makes the APK acceptable to every installer.
-            enableV1Signing = true
-            enableV2Signing = true
-            enableV3Signing = true
+        if (sideloadKeystore.exists()) {
+            create("sideload") {
+                storeFile = sideloadKeystore
+                storePassword = "yourtoba"
+                keyAlias = "yourtoba"
+                keyPassword = "yourtoba"
+                // v2 alone suffices on Android 9+, and AGP omits v1 at this
+                // minSdk. But the Fire TV sideload path is rarely the platform
+                // installer: it is Downloader or a file manager, and several of
+                // those reject an APK with no v1 JAR signature block as bad, or
+                // mistake it for a split. Signing all three costs nothing.
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
         }
     }
 
@@ -71,10 +78,10 @@ android {
             // and an obfuscated WebView bridge is harder to debug on a TV where
             // the only diagnostic channel is `adb logcat`.
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("sideload")
+            signingConfig = signingConfigs.findByName("sideload")
         }
         debug {
-            signingConfig = signingConfigs.getByName("sideload")
+            signingConfig = signingConfigs.findByName("sideload")
         }
     }
 
@@ -90,6 +97,17 @@ android {
     androidResources {
         // yourtoba.js must reach the device byte-for-byte.
         noCompress += "js"
+    }
+}
+
+gradle.taskGraph.whenReady {
+    if (!file("sideload.keystore").exists() &&
+        allTasks.any { it.name.contains("assemble", ignoreCase = true) }
+    ) {
+        logger.warn(
+            "\n  YourTOBA: app/sideload.keystore is missing, so this build will be UNSIGNED " +
+                "and cannot be installed.\n  Run ./tools/make-keystore.sh once, then build again.\n"
+        )
     }
 }
 
