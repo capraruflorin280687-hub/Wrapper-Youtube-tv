@@ -458,7 +458,7 @@
     }
 
     var looksLikeLogo = function (el) {
-      if (!el || el.getAttribute(BADGE_ATTR) || el.closest('[' + BADGE_ATTR + ']')) return false
+      if (!el || el.getAttribute(BADGE_ATTR) || el.closest('[data-yourtoba-orig]') || el.closest('[' + BADGE_ATTR + ']')) return false
       var r = el.getBoundingClientRect()
       var w = r.width, h = r.height
       if (w < 60 || w > 400 || h < 15 || h > 100) return false
@@ -499,6 +499,44 @@
       return chosen
     }
 
+    // Fine-tune the badge position in CSS pixels (positive = right / down).
+    var BADGE_SHIFT_X = 0
+    var BADGE_SHIFT_Y = 0
+
+    var ORIG_ATTR = 'data-yourtoba-orig'
+    var tracked = []
+    var trackerRunning = false
+
+    // The original logo stays in the layout (invisible), so the page keeps its
+    // spacing. The badge is a fixed overlay that follows the original's box on
+    // every frame, so it sits exactly where the logo was: the right end of the
+    // search bar row. It hides itself whenever the original is not shown.
+    var tick = function () {
+      for (var i = tracked.length - 1; i >= 0; i--) {
+        var t = tracked[i]
+        if (!document.documentElement.contains(t.el)) {
+          if (t.badge.parentNode) t.badge.parentNode.removeChild(t.badge)
+          tracked.splice(i, 1)
+          continue
+        }
+        var r = t.el.getBoundingClientRect()
+        if (r.width < 1 || r.height < 1) {
+          t.badge.style.display = 'none'
+          continue
+        }
+        t.badge.style.display = 'block'
+        t.badge.style.left = Math.round(r.left + BADGE_SHIFT_X) + 'px'
+        t.badge.style.top = Math.round(r.top + BADGE_SHIFT_Y) + 'px'
+        t.badge.setAttribute('width', String(Math.round(r.width)))
+        t.badge.setAttribute('height', String(Math.round(r.height)))
+      }
+      if (tracked.length) {
+        requestAnimationFrame(tick)
+      } else {
+        trackerRunning = false
+      }
+    }
+
     var scans = 0
     var swapLogo = function () {
       try {
@@ -506,17 +544,22 @@
         var found = findLogo(scans <= 25)
         for (var i = 0; i < found.length; i++) {
           var el = found[i]
+          if (el.getAttribute(ORIG_ATTR)) continue
           var r = el.getBoundingClientRect()
-          var prev = el.previousElementSibling
-          if (prev && prev.getAttribute && prev.getAttribute(BADGE_ATTR)) {
-            el.style.setProperty('display', 'none', 'important')
-            continue
-          }
           var badge = makeBadge(r.width, r.height)
-          if (el.parentNode) {
-            el.parentNode.insertBefore(badge, el)
-            el.style.setProperty('display', 'none', 'important')
-          }
+          badge.style.position = 'fixed'
+          badge.style.left = Math.round(r.left) + 'px'
+          badge.style.top = Math.round(r.top) + 'px'
+          badge.style.zIndex = '2147483647'
+          badge.style.pointerEvents = 'none'
+          document.body.appendChild(badge)
+          el.setAttribute(ORIG_ATTR, '1')
+          el.style.setProperty('visibility', 'hidden', 'important')
+          tracked.push({ el: el, badge: badge })
+        }
+        if (tracked.length && !trackerRunning) {
+          trackerRunning = true
+          requestAnimationFrame(tick)
         }
       } catch (e) {}
     }
