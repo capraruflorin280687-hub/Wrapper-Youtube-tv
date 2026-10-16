@@ -31,8 +31,9 @@ object Flavor {
     const val PULL_TO_REFRESH = false
 
     /**
-     * H.264 only by default. A first-generation Fire TV Stick 4K has no AV1
+     * No AV1 by default (VP9 and H.264 allowed). Many videos have no H.264 stream,
+     * so blocking VP9 gives "This video format is not supported". A first-generation Fire TV Stick 4K has no AV1
      * decoder and older Fire TV sticks do not hardware-decode VP9 either.
      */
-    const val DEFAULT_CODEC_POLICY = "h264-only"
+    const val DEFAULT_CODEC_POLICY = "no-av1"
 }
