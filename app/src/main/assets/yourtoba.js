@@ -414,6 +414,136 @@
     else document.addEventListener('DOMContentLoaded', applyViewport)
   }
 
+  // ---------------------------------------------------------------------
+  // Logo swap: replaces the YouTube logo (top right) with a "Premium" badge.
+  //
+  // The logo is drawn by YouTube's own page, so it is found at runtime: first
+  // by a few likely selectors, then by a size/position heuristic (a wide,
+  // short svg/img/background in the top-right corner). The original is hidden
+  // and a red-icon + "Premium" SVG takes its exact place. A MutationObserver
+  // redoes it whenever YouTube re-renders the header. Wrapped in try/catch so
+  // a failure here can never take the ad stripping above down with it.
+  try {
+    var PREMIUM_TEXT = 'Premium'
+    var BADGE_ATTR = 'data-yourtoba-premium'
+
+    var makeBadge = function (w, h) {
+      var ns = 'http://www.w3.org/2000/svg'
+      var svg = document.createElementNS(ns, 'svg')
+      svg.setAttribute(BADGE_ATTR, '1')
+      svg.setAttribute('viewBox', '0 0 195 45')
+      svg.setAttribute('preserveAspectRatio', 'xMaxYMid meet')
+      svg.setAttribute('width', String(Math.round(w)))
+      svg.setAttribute('height', String(Math.round(h)))
+      svg.style.flex = 'none'
+      svg.style.display = 'block'
+      var icon = document.createElementNS(ns, 'rect')
+      icon.setAttribute('x', '0'); icon.setAttribute('y', '2')
+      icon.setAttribute('width', '60'); icon.setAttribute('height', '41')
+      icon.setAttribute('rx', '11'); icon.setAttribute('fill', '#ff0033')
+      var tri = document.createElementNS(ns, 'path')
+      tri.setAttribute('d', 'M24 13 L24 32 L41 22.5 Z')
+      tri.setAttribute('fill', '#ffffff')
+      var txt = document.createElementNS(ns, 'text')
+      txt.setAttribute('x', '68'); txt.setAttribute('y', '34')
+      txt.setAttribute('fill', '#ffffff')
+      txt.setAttribute('font-family', 'Roboto, Arial, sans-serif')
+      txt.setAttribute('font-weight', '700')
+      txt.setAttribute('font-size', '36')
+      txt.setAttribute('textLength', '127')
+      txt.setAttribute('lengthAdjust', 'spacingAndGlyphs')
+      txt.textContent = PREMIUM_TEXT
+      svg.appendChild(icon); svg.appendChild(tri); svg.appendChild(txt)
+      return svg
+    }
+
+    var looksLikeLogo = function (el) {
+      if (!el || el.getAttribute(BADGE_ATTR) || el.closest('[' + BADGE_ATTR + ']')) return false
+      var r = el.getBoundingClientRect()
+      var w = r.width, h = r.height
+      if (w < 60 || w > 400 || h < 15 || h > 100) return false
+      var ratio = w / h
+      if (ratio < 2.2 || ratio > 6.5) return false
+      if (r.top > window.innerHeight * 0.2) return false
+      if (r.left < window.innerWidth * 0.55) return false
+      return true
+    }
+
+    var findLogo = function (deepScan) {
+      var hits = []
+      var list = document.querySelectorAll(
+        'ytlr-logo-entity, [class*="logo" i], svg, img, yt-icon, ytlr-icon'
+      )
+      var i
+      for (i = 0; i < list.length; i++) {
+        if (looksLikeLogo(list[i])) hits.push(list[i])
+      }
+      if (!hits.length && deepScan && document.body) {
+        var all = document.body.getElementsByTagName('*')
+        for (i = 0; i < all.length; i++) {
+          var el = all[i]
+          if (!looksLikeLogo(el)) continue
+          var bg = getComputedStyle(el).backgroundImage
+          if (bg && bg !== 'none') hits.push(el)
+        }
+      }
+      // Outermost match wins (document order lists ancestors first).
+      var chosen = []
+      for (i = 0; i < hits.length; i++) {
+        var inside = false
+        for (var j = 0; j < chosen.length; j++) {
+          if (chosen[j].contains(hits[i])) { inside = true; break }
+        }
+        if (!inside) chosen.push(hits[i])
+      }
+      return chosen
+    }
+
+    var scans = 0
+    var swapLogo = function () {
+      try {
+        scans++
+        var found = findLogo(scans <= 25)
+        for (var i = 0; i < found.length; i++) {
+          var el = found[i]
+          var r = el.getBoundingClientRect()
+          var prev = el.previousElementSibling
+          if (prev && prev.getAttribute && prev.getAttribute(BADGE_ATTR)) {
+            el.style.setProperty('display', 'none', 'important')
+            continue
+          }
+          var badge = makeBadge(r.width, r.height)
+          if (el.parentNode) {
+            el.parentNode.insertBefore(badge, el)
+            el.style.setProperty('display', 'none', 'important')
+          }
+        }
+      } catch (e) {}
+    }
+
+    var swapTimer = null
+    var scheduleSwap = function () {
+      if (swapTimer) return
+      swapTimer = setTimeout(function () {
+        swapTimer = null
+        swapLogo()
+      }, 400)
+    }
+
+    var startLogoWatch = function () {
+      scheduleSwap()
+      new MutationObserver(scheduleSwap).observe(document.documentElement, {
+        childList: true,
+        subtree: true
+      })
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startLogoWatch)
+    } else {
+      startLogoWatch()
+    }
+  } catch (e) {}
+
   if (window.YourTOBA && window.YourTOBA.onInjected) {
     try {
       window.YourTOBA.onInjected(location.href)
