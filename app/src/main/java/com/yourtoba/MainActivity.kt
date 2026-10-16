@@ -251,6 +251,17 @@ class MainActivity : AppCompatActivity() {
                 goFullscreen()
             }
 
+            // WebView paints its own gray placeholder (a stretched play icon)
+            // until the first video frame arrives. Return a black pixel so the
+            // first seconds of every video are black instead.
+            override fun getDefaultVideoPoster(): android.graphics.Bitmap? {
+                val bmp = android.graphics.Bitmap.createBitmap(
+                    1, 1, android.graphics.Bitmap.Config.ARGB_8888
+                )
+                bmp.eraseColor(Color.BLACK)
+                return bmp
+            }
+
             override fun onConsoleMessage(m: ConsoleMessage): Boolean {
                 if (m.messageLevel() == ConsoleMessage.MessageLevel.ERROR ||
                     m.message().contains("video", true) ||
