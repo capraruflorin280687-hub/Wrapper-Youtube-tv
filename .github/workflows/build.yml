@@ -1,0 +1,35 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Create signing key
+        run: |
+          keytool -genkeypair -keystore app/sideload.keystore \
+            -alias yourtoba -keyalg RSA -keysize 2048 -validity 10950 \
+            -storepass yourtoba -keypass yourtoba \
+            -dname "CN=YourTOBA, OU=Sideload, O=YourTOBA"
+
+      - name: Build
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleTvRelease assemblePhoneRelease --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: app/build/outputs/apk/**/*.apk
