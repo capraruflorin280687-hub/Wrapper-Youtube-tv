@@ -86,7 +86,7 @@ class MainActivity : AppCompatActivity() {
         private val CODEC_POLICIES = listOf("h264-only", "no-av1", "all")
 
         private const val PREFS = "yourtoba"
-        private const val PREF_CODEC = "codec_policy"
+        private const val PREF_CODEC = "codec_policy_v2"
         private const val PREF_LAYER = "layer_mode"
 
         /**
