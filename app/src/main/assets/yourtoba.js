@@ -544,6 +544,83 @@
     }
   } catch (e) {}
 
+  // ---------------------------------------------------------------------
+  // Black player background.
+  //
+  // The gray behind the player (the placeholder with the play icon) is drawn
+  // by YouTube's page. Two layers: static CSS for the usual player containers
+  // and the video element, plus a runtime sweep that turns any large gray
+  // (r = g = b, 90..200) element covering most of the screen black. Wrapped in
+  // try/catch so it can never affect the ad stripping.
+  try {
+    var BLACK_ATTR = 'data-yourtoba-black'
+
+    var addBlackCss = function () {
+      if (document.getElementById('yourtoba-black-css')) return
+      var st = document.createElement('style')
+      st.id = 'yourtoba-black-css'
+      st.textContent =
+        'html, body, video, ytlr-player, ytlr-watch-page, ytlr-player-container,' +
+        ' .html5-video-player, .html5-video-container, .video-stream,' +
+        ' [class*="player" i], [class*="Player"] { background-color: #000 !important; }' +
+        'video { background: #000 !important; }' +
+        'video[poster] { object-fit: contain; }'
+      ;(document.head || document.documentElement).appendChild(st)
+    }
+
+    var isGray = function (c) {
+      var m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(c || '')
+      if (!m) return false
+      var r = +m[1], g = +m[2], b = +m[3]
+      var a = m[4] === undefined ? 1 : +m[4]
+      return a > 0.5 && Math.abs(r - g) < 8 && Math.abs(g - b) < 8 && r >= 90 && r <= 200
+    }
+
+    var blackenGray = function () {
+      try {
+        if (!document.body) return
+        var vw = window.innerWidth, vh = window.innerHeight
+        var all = document.body.getElementsByTagName('*')
+        for (var i = 0; i < all.length; i++) {
+          var el = all[i]
+          if (el.getAttribute(BLACK_ATTR)) continue
+          var r = el.getBoundingClientRect()
+          if (r.width < vw * 0.5 || r.height < vh * 0.5) continue
+          if (isGray(getComputedStyle(el).backgroundColor)) {
+            el.setAttribute(BLACK_ATTR, '1')
+            el.style.setProperty('background-color', '#000', 'important')
+          }
+        }
+      } catch (e) {}
+    }
+
+    var blackTimer = null
+    var scheduleBlack = function () {
+      if (blackTimer) return
+      blackTimer = setTimeout(function () {
+        blackTimer = null
+        addBlackCss()
+        blackenGray()
+      }, 300)
+    }
+
+    var startBlackWatch = function () {
+      addBlackCss()
+      scheduleBlack()
+      new MutationObserver(scheduleBlack).observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style']
+      })
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startBlackWatch)
+    } else {
+      startBlackWatch()
+    }
+  } catch (e) {}
+
   if (window.YourTOBA && window.YourTOBA.onInjected) {
     try {
       window.YourTOBA.onInjected(location.href)
